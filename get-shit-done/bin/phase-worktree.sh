@@ -230,6 +230,42 @@ _test_lock_atomicity() {
 # Worktree Lifecycle Functions
 # ============================================================================
 
+# Run post-create hooks for new worktree (FLOW-06, FLOW-07)
+run_post_create_hooks() {
+    local worktree_dir="$1"
+
+    echo "Running post-create hooks..." >&2
+
+    # FLOW-06: npm install if package.json exists
+    if [ -f "${worktree_dir}/package.json" ]; then
+        echo "  Installing npm dependencies..." >&2
+        if [ -f "${worktree_dir}/package-lock.json" ]; then
+            # Use npm ci for reproducible installs when lock file exists
+            if (cd "$worktree_dir" && timeout 120 npm ci --silent --no-audit --no-fund 2>&1); then
+                echo "  Dependencies installed (npm ci)." >&2
+            else
+                echo "  Warning: npm ci failed or timed out. Run manually if needed." >&2
+            fi
+        else
+            # Fall back to npm install if no lock file
+            if (cd "$worktree_dir" && timeout 120 npm install --silent --no-audit --no-fund 2>&1); then
+                echo "  Dependencies installed (npm install)." >&2
+            else
+                echo "  Warning: npm install failed or timed out. Run manually if needed." >&2
+            fi
+        fi
+    fi
+
+    # FLOW-07: Copy .env.example to .env if present and .env missing
+    if [ -f "${worktree_dir}/.env.example" ] && [ ! -f "${worktree_dir}/.env" ]; then
+        echo "  Copying .env.example to .env..." >&2
+        cp "${worktree_dir}/.env.example" "${worktree_dir}/.env"
+        echo "  Environment file created." >&2
+    fi
+
+    return 0
+}
+
 # Create worktree for a phase with existing detection (TREE-01, TREE-05)
 create_worktree() {
     local phase="$1"
