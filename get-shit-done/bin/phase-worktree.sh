@@ -7,6 +7,75 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GSD_TOOLS="$SCRIPT_DIR/gsd-tools.cjs"
 
+# ============================================================================
+# Repository Info Helpers
+# ============================================================================
+
+get_repo_root() {
+    git rev-parse --show-toplevel
+}
+
+get_repo_name() {
+    basename "$(get_repo_root)"
+}
+
+# ============================================================================
+# Worktree Path Functions
+# ============================================================================
+
+# Get worktree directory path (per user decision: .worktrees/{repo}-phase-{N})
+get_worktree_dir() {
+    local phase="$1"
+    local repo_root
+    local repo_name
+    repo_root=$(get_repo_root)
+    repo_name=$(get_repo_name)
+    echo "${repo_root}/.worktrees/${repo_name}-phase-${phase}"
+}
+
+# Get branch name (per user decision: phase-{N}-{slug})
+get_branch_name() {
+    local phase="$1"
+    local slug="$2"
+    echo "phase-${phase}-${slug}"
+}
+
+# Get phase slug from roadmap via gsd-tools
+get_phase_slug() {
+    local phase="$1"
+    # Use gsd-tools to get phase info
+    local info
+    info=$(node "$GSD_TOOLS" find-phase "$phase" 2>/dev/null) || {
+        echo "unknown"
+        return 1
+    }
+    # Extract slug from phase name (e.g., "01-foundation" -> "foundation")
+    echo "$info" | sed 's/.*-//'
+}
+
+# Ensure .worktrees/ is in .gitignore
+ensure_gitignore() {
+    local repo_root
+    repo_root=$(get_repo_root)
+    local gitignore="${repo_root}/.gitignore"
+
+    if ! grep -q "^\.worktrees/" "$gitignore" 2>/dev/null; then
+        echo "" >> "$gitignore"
+        echo "# Worktree directories (created by phase-worktree.sh)" >> "$gitignore"
+        echo ".worktrees/" >> "$gitignore"
+    fi
+}
+
+# Prune stale worktrees (TREE-06)
+prune_stale() {
+    # Run git worktree prune to clean up stale references
+    git worktree prune 2>/dev/null || true
+}
+
+# ============================================================================
+# Lock Functions
+# ============================================================================
+
 # Get lock directory path for a phase
 get_lock_dir() {
     local phase="$1"
