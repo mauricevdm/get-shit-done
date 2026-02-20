@@ -343,6 +343,9 @@ create_worktree() {
     node "$GSD_TOOLS" worktree add "$phase" "$worktree_dir" \
         --branch "$branch" --slug "$slug" 2>/dev/null || true
 
+    # Run post-create hooks (FLOW-06, FLOW-07)
+    run_post_create_hooks "$worktree_dir"
+
     echo "$worktree_dir"
     return 0
 }
