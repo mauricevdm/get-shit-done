@@ -10,7 +10,7 @@ This roadmap delivers parallel phase execution through git worktree isolation. T
 - Integer phases (1, 2, 3, 4): Planned milestone work
 - Decimal phases (e.g., 2.1): Urgent insertions (marked with INSERTED)
 
-- [ ] **Phase 1: Foundation** - Worktree lifecycle, lock mechanism, and registry infrastructure
+- [x] **Phase 1: Foundation** - Worktree lifecycle, lock mechanism, and registry infrastructure
 - [ ] **Phase 2: Workflow Integration** - execute-phase and finalize-phase worktree operations
 - [ ] **Phase 3: State Reconciliation** - STATE.md merge algorithm and conflict handling
 - [ ] **Phase 4: Polish and Recovery** - Cleanup commands, orphan detection, and error recovery
@@ -27,12 +27,12 @@ This roadmap delivers parallel phase execution through git worktree isolation. T
   3. User can retrieve the path for an existing worktree by phase number
   4. Concurrent attempts to execute the same phase are blocked with clear error message
   5. Existing worktree is detected and reused instead of failing on recreation attempt
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans executed
 
 Plans:
-- [ ] 01-01-PLAN.md — Add worktree/lock registry commands to gsd-tools.cjs
+- [x] 01-01-PLAN.md — Add worktree/lock registry commands to gsd-tools.cjs
 - [x] 01-02-PLAN.md — Create phase-worktree.sh with atomic lock functions
-- [ ] 01-03-PLAN.md — Implement complete worktree lifecycle operations
+- [x] 01-03-PLAN.md — Implement complete worktree lifecycle operations
 
 ### Phase 2: Workflow Integration
 **Goal**: Update execute-phase and finalize-phase workflows to use worktree operations
@@ -84,7 +84,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 2/3 | In Progress|  |
+| 1. Foundation | 3/3 | Complete | 2026-02-20 |
 | 2. Workflow Integration | 0/2 | Not started | - |
 | 3. State Reconciliation | 0/1 | Not started | - |
 | 4. Polish and Recovery | 0/1 | Not started | - |
