@@ -33,28 +33,35 @@ Check `branching_strategy` from init:
 
 **"none":** Skip, continue on current branch.
 
-**"phase" or "milestone":** Create worktree and switch to it for isolated execution:
+**"phase" or "milestone":** Create worktree using phase-worktree.sh:
 
 ```bash
-# Check if project has worktree scripts
-if [ -f ".planning/scripts/phase-worktree.sh" ]; then
-  # Check if worktree already exists
-  WORKTREE_STATUS=$(.planning/scripts/phase-worktree.sh status 2>/dev/null | grep "Phase ${PHASE_NUMBER}:" || echo "")
+# Locate phase-worktree.sh script
+# Check project repo first, then home-installed GSD
+REPO_ROOT=$(git rev-parse --show-toplevel)
+PHASE_WORKTREE="${REPO_ROOT}/get-shit-done/bin/phase-worktree.sh"
 
-  if echo "$WORKTREE_STATUS" | grep -q "worktree exists"; then
-    # Worktree exists, just switch to it
-    WORKTREE_PATH=$(.planning/scripts/phase-worktree.sh path "${PHASE_NUMBER}")
-    echo "Switching to existing worktree: $WORKTREE_PATH"
+if [ ! -f "$PHASE_WORKTREE" ]; then
+  PHASE_WORKTREE="${HOME}/.claude/get-shit-done/bin/phase-worktree.sh"
+fi
+
+if [ -f "$PHASE_WORKTREE" ]; then
+  # create is idempotent: returns existing path or creates new (FLOW-01, FLOW-02)
+  # Post-create hooks (npm install, .env copy) run automatically for new worktrees
+  WORKTREE_PATH=$("$PHASE_WORKTREE" create "${PHASE_NUMBER}" "${PHASE_SLUG}")
+  WORKTREE_EXIT=$?
+
+  if [ $WORKTREE_EXIT -eq 0 ] && [ -n "$WORKTREE_PATH" ]; then
+    echo "Switching to worktree: $WORKTREE_PATH"
     cd "$WORKTREE_PATH"
+    BRANCH_NAME=$(git branch --show-current)
   else
-    # Create worktree (also claims lock)
-    .planning/scripts/phase-worktree.sh create "${PHASE_NUMBER}"
-    WORKTREE_PATH=$(.planning/scripts/phase-worktree.sh path "${PHASE_NUMBER}")
-    echo "Created worktree: $WORKTREE_PATH"
-    cd "$WORKTREE_PATH"
+    echo "Error: Failed to create/access worktree" >&2
+    exit 1
   fi
 else
   # Fallback: simple branch checkout (no worktree isolation)
+  BRANCH_NAME="phase-${PHASE_NUMBER}-${PHASE_SLUG}"
   git checkout -b "$BRANCH_NAME" 2>/dev/null || git checkout "$BRANCH_NAME"
 fi
 ```
@@ -62,7 +69,7 @@ fi
 Display to user:
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- GSD ► WORKTREE READY
+ GSD > WORKTREE READY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Working directory: {WORKTREE_PATH}
