@@ -1,5 +1,15 @@
 {
   "version": 1,
-  "worktrees": {},
+  "worktrees": {
+    "phase-99": {
+      "phase_number": "99",
+      "phase_name": "verify",
+      "branch": "test-branch",
+      "path": "/tmp/verify-test",
+      "created": "2026-02-20T17:14:01.515Z",
+      "status": "removed",
+      "removed": "2026-02-20T17:14:01.600Z"
+    }
+  },
   "locks": {}
 }

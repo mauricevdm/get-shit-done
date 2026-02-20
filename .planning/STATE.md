@@ -13,7 +13,7 @@
 **Status:** Executing Phase 1
 
 ```
-[########            ] 33% - Plan 01-02 complete
+[#############       ] 66% - Plans 01-01, 01-02 complete
 ```
 
 **Phases:**
@@ -26,9 +26,9 @@
 
 | Metric | Value |
 |--------|-------|
-| Plans completed | 1 |
+| Plans completed | 2 |
 | Plans failed | 0 |
-| Current streak | 1 |
+| Current streak | 2 |
 | Retries used | 0 |
 
 ## Accumulated Context
@@ -43,6 +43,8 @@
 | Sibling directory worktrees | Predictable paths, no nested .gitignore complexity | 2026-02-20 |
 | Lock directory pattern | .planning/worktrees/locks/phase-{N}/ with info.json metadata | 2026-02-20 |
 | Stale lock detection via PID | kill -0 to check process existence, return 0 for stale | 2026-02-20 |
+| Mark removed worktrees | Preserve history with status: removed instead of deleting | 2026-02-20 |
+| Absolute paths in registry | Use path.resolve() for consistent worktree path storage | 2026-02-20 |
 
 ### Implementation Notes
 
@@ -61,7 +63,7 @@
 
 - [x] Plan Phase 1 with `/gsd:plan-phase 1`
 - [x] Implement phase-worktree.sh lock functions (01-02)
-- [ ] Add worktree subcommands to gsd-tools.cjs (01-01 - pending)
+- [x] Add worktree subcommands to gsd-tools.cjs (01-01)
 - [ ] Implement worktree lifecycle operations (01-03)
 
 ### Blockers
@@ -71,12 +73,11 @@ None currently.
 ## Session Continuity
 
 **Last Session:** 2026-02-20
-**Context:** Plan 01-02 complete. phase-worktree.sh created with atomic lock functions.
+**Context:** Plan 01-01 complete. Worktree and lock registry commands added to gsd-tools.cjs.
 
 **To Resume:**
-1. Execute Plan 01-01 (gsd-tools.cjs worktree/lock commands) - may already be staged
-2. Execute Plan 01-03 (worktree lifecycle operations)
-3. Requirements completed: LOCK-01, LOCK-02, LOCK-03
+1. Execute Plan 01-03 (worktree lifecycle operations)
+2. Requirements completed: LOCK-01, LOCK-02, LOCK-03, TREE-02, TREE-03, LOCK-04, STATE-01
 
 ---
 *State initialized: 2026-02-20*

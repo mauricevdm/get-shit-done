@@ -27,7 +27,7 @@ This roadmap delivers parallel phase execution through git worktree isolation. T
   3. User can retrieve the path for an existing worktree by phase number
   4. Concurrent attempts to execute the same phase are blocked with clear error message
   5. Existing worktree is detected and reused instead of failing on recreation attempt
-**Plans:** 3 plans
+**Plans:** 2/3 plans executed
 
 Plans:
 - [ ] 01-01-PLAN.md — Add worktree/lock registry commands to gsd-tools.cjs
@@ -84,7 +84,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 1/3 | In progress | - |
+| 1. Foundation | 2/3 | In Progress|  |
 | 2. Workflow Integration | 0/2 | Not started | - |
 | 3. State Reconciliation | 0/1 | Not started | - |
 | 4. Polish and Recovery | 0/1 | Not started | - |
