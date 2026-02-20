@@ -311,8 +311,159 @@ create_worktree() {
     return 0
 }
 
+# Remove worktree for a phase (TREE-04)
+remove_worktree() {
+    local phase="$1"
+    local force="${2:-}"
+
+    local worktree_dir
+    worktree_dir=$(get_worktree_dir "$phase")
+
+    # Prune stale first
+    prune_stale
+
+    # Get worktree info from registry
+    local existing
+    existing=$(node "$GSD_TOOLS" worktree get "$phase" 2>/dev/null) || true
+
+    if [ -z "$existing" ] && [ ! -d "$worktree_dir" ]; then
+        echo "No worktree found for phase $phase" >&2
+        return 1
+    fi
+
+    # Get branch name from registry or construct it
+    local branch
+    if [ -n "$existing" ]; then
+        branch=$(echo "$existing" | grep -o '"branch": *"[^"]*"' | cut -d'"' -f4)
+    fi
+
+    # Remove git worktree (NEVER rm -rf, per research)
+    if [ -d "$worktree_dir" ]; then
+        echo "Removing worktree at $worktree_dir..."
+
+        # First, unlock the worktree if it was locked with --lock
+        git worktree unlock "$worktree_dir" 2>/dev/null || true
+
+        if [ "$force" = "--force" ]; then
+            git worktree remove "$worktree_dir" --force 2>&1 || {
+                echo "Warning: git worktree remove --force failed" >&2
+                return 1
+            }
+        else
+            git worktree remove "$worktree_dir" 2>&1 || {
+                echo "Error: Could not remove worktree. Use --force if needed." >&2
+                return 1
+            }
+        fi
+    fi
+
+    # Delete the branch if it exists and is fully merged
+    if [ -n "$branch" ]; then
+        if git show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null; then
+            # Try to delete (only succeeds if merged)
+            if git branch -d "$branch" 2>/dev/null; then
+                echo "Deleted merged branch $branch"
+            else
+                echo "Warning: Branch $branch not deleted (not fully merged or checked out elsewhere)" >&2
+            fi
+        fi
+    fi
+
+    # Release lock (LOCK-02)
+    release_lock "$phase" 2>/dev/null || true
+
+    # Remove from registry
+    node "$GSD_TOOLS" worktree remove "$phase" 2>/dev/null || true
+
+    echo "Worktree for phase $phase removed."
+    return 0
+}
+
+# Get path to existing worktree (TREE-03)
+path_worktree() {
+    local phase="$1"
+
+    # Check registry first
+    local existing
+    existing=$(node "$GSD_TOOLS" worktree get "$phase" 2>/dev/null) || true
+
+    if [ -n "$existing" ]; then
+        local existing_path
+        existing_path=$(echo "$existing" | grep -o '"path": *"[^"]*"' | cut -d'"' -f4)
+        if [ -d "$existing_path" ]; then
+            echo "$existing_path"
+            return 0
+        fi
+    fi
+
+    # Fallback: check standard location
+    local worktree_dir
+    worktree_dir=$(get_worktree_dir "$phase")
+    if [ -d "$worktree_dir" ]; then
+        echo "$worktree_dir"
+        return 0
+    fi
+
+    echo "No worktree found for phase $phase" >&2
+    return 1
+}
+
+# List all worktrees (TREE-02)
+list_worktrees() {
+    # Prune stale first
+    prune_stale
+
+    # Get from registry
+    node "$GSD_TOOLS" worktree list 2>/dev/null || echo "[]"
+}
+
+# Show worktree status with git info
+status_worktrees() {
+    # Prune stale first
+    prune_stale
+
+    # Get combined status
+    node "$GSD_TOOLS" worktree status 2>/dev/null || {
+        echo "Registry not initialized. Run 'phase-worktree.sh init' first." >&2
+        return 1
+    }
+}
+
+# Initialize worktree infrastructure
+init_worktrees() {
+    node "$GSD_TOOLS" worktree init
+    ensure_gitignore
+    echo "Worktree infrastructure initialized."
+}
+
+# ============================================================================
+# Command Dispatch
+# ============================================================================
+
 # Command dispatch
 case "${1:-}" in
+    init)
+        init_worktrees
+        ;;
+    create)
+        create_worktree "${2:?Phase number required}" "${3:-}"
+        ;;
+    remove)
+        remove_worktree "${2:?Phase number required}" "${3:-}"
+        ;;
+    path)
+        path_worktree "${2:?Phase number required}"
+        ;;
+    list)
+        list_worktrees
+        ;;
+    status)
+        status_worktrees
+        ;;
+    prune)
+        prune_stale
+        echo "Pruned stale worktree references."
+        ;;
     acquire-lock)
         acquire_lock "${2:?Phase number required}"
         ;;
@@ -332,6 +483,15 @@ case "${1:-}" in
         # If sourced, don't show usage
         if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             echo "Usage: phase-worktree.sh <command> [args]"
+            echo ""
+            echo "Worktree Commands:"
+            echo "  init                   Initialize worktree infrastructure"
+            echo "  create <phase> [slug]  Create worktree for phase"
+            echo "  remove <phase> [--force]  Remove worktree for phase"
+            echo "  path <phase>           Get path to existing worktree"
+            echo "  list                   List all worktrees (JSON)"
+            echo "  status                 Show worktree status with git info"
+            echo "  prune                  Prune stale worktree references"
             echo ""
             echo "Lock Commands:"
             echo "  acquire-lock <phase>   Acquire atomic lock for phase"
