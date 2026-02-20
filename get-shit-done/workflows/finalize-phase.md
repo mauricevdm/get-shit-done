@@ -62,6 +62,25 @@ UAT_STATUS=$(grep "^status:" "$UAT_FILE" | cut -d: -f2 | tr -d ' ')
 | `failed` | → "UAT failed. Fix issues and re-run `/gsd:verify-work ${PHASE_NUMBER}`" |
 | `diagnosed` | → "UAT has unresolved gaps. Run `/gsd:plan-phase ${PHASE_NUMBER} --gaps` to address them" |
 | other | → "UAT incomplete. Run `/gsd:verify-work ${PHASE_NUMBER}` first" |
+
+**Gate enforcement (FLOW-03):**
+- If UAT status is NOT "passed", the step MUST exit/stop workflow execution
+- The Claude executor should NOT proceed to subsequent steps
+- Report what needs to be done and exit
+
+Example blocking pattern:
+```bash
+if [ "$UAT_STATUS" != "passed" ]; then
+  echo "## X UAT Gate Failed"
+  echo ""
+  echo "UAT status: $UAT_STATUS"
+  echo "Finalization blocked until UAT passes."
+  echo ""
+  echo "Next: /gsd:verify-work ${PHASE_NUMBER}"
+  # FLOW-03: Must exit here, not continue
+  exit 1
+fi
+```
 </step>
 
 <step name="check_verification_status">
@@ -86,6 +105,21 @@ VERIFY_STATUS=$(grep "^status:" "$VERIFY_FILE" | cut -d: -f2 | tr -d ' ')
 | `gaps_found` | → "Verification found gaps. Run `/gsd:plan-phase ${PHASE_NUMBER} --gaps`" |
 | `human_needed` | → "Human verification required. Complete manual testing first." |
 | other | → "Verification incomplete. Re-run `/gsd:execute-phase ${PHASE_NUMBER}`" |
+
+**Gate enforcement (FLOW-03):**
+```bash
+if [ "$VERIFY_STATUS" != "passed" ]; then
+  echo "## X Verification Gate Failed"
+  echo ""
+  echo "Verification status: $VERIFY_STATUS"
+  echo "Finalization blocked until verification passes."
+  echo ""
+  echo "Next: /gsd:execute-phase ${PHASE_NUMBER} (if incomplete)"
+  echo "  or: /gsd:plan-phase ${PHASE_NUMBER} --gaps (if gaps_found)"
+  # FLOW-03: Must exit here, not continue
+  exit 1
+fi
+```
 </step>
 
 <step name="run_tests">
