@@ -112,3 +112,82 @@ force_unlock() {
     node "$GSD_TOOLS" lock clear "$phase" 2>/dev/null || true
     echo "Lock removed."
 }
+
+# Self-test function for development/debugging
+_test_lock_atomicity() {
+    local test_phase="__test_atomicity__"
+    local lock_dir
+    lock_dir=$(get_lock_dir "$test_phase")
+
+    echo "Testing lock atomicity..."
+
+    # Clean up any previous test
+    rm -rf "$lock_dir" 2>/dev/null || true
+
+    # Acquire lock
+    if acquire_lock "$test_phase"; then
+        echo "[PASS] First lock acquired"
+    else
+        echo "[FAIL] Failed to acquire first lock"
+        return 1
+    fi
+
+    # Try to acquire again (should fail)
+    if acquire_lock "$test_phase" 2>/dev/null; then
+        echo "[FAIL] Second lock should have failed"
+        release_lock "$test_phase"
+        return 1
+    else
+        echo "[PASS] Second lock correctly rejected"
+    fi
+
+    # Release and cleanup
+    release_lock "$test_phase"
+    echo "[PASS] Lock released"
+
+    # Verify cleanup
+    if [ -d "$lock_dir" ]; then
+        echo "[FAIL] Lock directory still exists after release"
+        return 1
+    else
+        echo "[PASS] Lock directory cleaned up"
+    fi
+
+    echo "All lock tests passed."
+    return 0
+}
+
+# Command dispatch
+case "${1:-}" in
+    acquire-lock)
+        acquire_lock "${2:?Phase number required}"
+        ;;
+    release-lock)
+        release_lock "${2:?Phase number required}"
+        ;;
+    check-stale)
+        check_stale_lock "${2:?Phase number required}"
+        ;;
+    force-unlock)
+        force_unlock "${2:?Phase number required}"
+        ;;
+    _test)
+        _test_lock_atomicity
+        ;;
+    *)
+        # If sourced, don't show usage
+        if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+            echo "Usage: phase-worktree.sh <command> [args]"
+            echo ""
+            echo "Lock Commands:"
+            echo "  acquire-lock <phase>   Acquire atomic lock for phase"
+            echo "  release-lock <phase>   Release lock for phase"
+            echo "  check-stale <phase>    Check if lock is stale"
+            echo "  force-unlock <phase>   Force remove lock (recovery)"
+            echo ""
+            echo "Testing:"
+            echo "  _test                  Run lock atomicity self-test"
+            exit 1
+        fi
+        ;;
+esac
