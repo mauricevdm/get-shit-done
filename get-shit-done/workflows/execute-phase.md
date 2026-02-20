@@ -33,12 +33,45 @@ Check `branching_strategy` from init:
 
 **"none":** Skip, continue on current branch.
 
-**"phase" or "milestone":** Use pre-computed `branch_name` from init:
+**"phase" or "milestone":** Create worktree and switch to it for isolated execution:
+
 ```bash
-git checkout -b "$BRANCH_NAME" 2>/dev/null || git checkout "$BRANCH_NAME"
+# Check if project has worktree scripts
+if [ -f ".planning/scripts/phase-worktree.sh" ]; then
+  # Check if worktree already exists
+  WORKTREE_STATUS=$(.planning/scripts/phase-worktree.sh status 2>/dev/null | grep "Phase ${PHASE_NUMBER}:" || echo "")
+
+  if echo "$WORKTREE_STATUS" | grep -q "worktree exists"; then
+    # Worktree exists, just switch to it
+    WORKTREE_PATH=$(.planning/scripts/phase-worktree.sh path "${PHASE_NUMBER}")
+    echo "Switching to existing worktree: $WORKTREE_PATH"
+    cd "$WORKTREE_PATH"
+  else
+    # Create worktree (also claims lock)
+    .planning/scripts/phase-worktree.sh create "${PHASE_NUMBER}"
+    WORKTREE_PATH=$(.planning/scripts/phase-worktree.sh path "${PHASE_NUMBER}")
+    echo "Created worktree: $WORKTREE_PATH"
+    cd "$WORKTREE_PATH"
+  fi
+else
+  # Fallback: simple branch checkout (no worktree isolation)
+  git checkout -b "$BRANCH_NAME" 2>/dev/null || git checkout "$BRANCH_NAME"
+fi
 ```
 
-All subsequent commits go to this branch. User handles merging.
+Display to user:
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ GSD ► WORKTREE READY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Working directory: {WORKTREE_PATH}
+Branch: {BRANCH_NAME}
+
+Parallel sessions can work on other phases without conflicts.
+```
+
+All subsequent commits go to this branch in the worktree. Use `/gsd:finalize-phase {N}` after completion to merge to main and cleanup.
 </step>
 
 <step name="validate_phase">
