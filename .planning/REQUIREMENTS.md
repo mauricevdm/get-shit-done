@@ -87,16 +87,16 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| TREE-01 | Phase 1 | Pending |
-| TREE-02 | Phase 1 | Pending |
-| TREE-03 | Phase 1 | Pending |
-| TREE-04 | Phase 1 | Pending |
-| TREE-05 | Phase 1 | Pending |
-| TREE-06 | Phase 1 | Pending |
-| LOCK-01 | Phase 1 | Pending |
-| LOCK-02 | Phase 1 | Pending |
-| LOCK-03 | Phase 1 | Pending |
-| LOCK-04 | Phase 1 | Pending |
+| TREE-01 | Phase 1 | ✓ Verified |
+| TREE-02 | Phase 1 | ✓ Verified |
+| TREE-03 | Phase 1 | ✓ Verified |
+| TREE-04 | Phase 1 | ✓ Verified |
+| TREE-05 | Phase 1 | ✓ Verified |
+| TREE-06 | Phase 1 | ✓ Verified |
+| LOCK-01 | Phase 1 | ✓ Verified |
+| LOCK-02 | Phase 1 | ✓ Verified |
+| LOCK-03 | Phase 1 | ✓ Verified |
+| LOCK-04 | Phase 1 | ✓ Verified |
 | FLOW-01 | Phase 2 | Pending |
 | FLOW-02 | Phase 2 | Pending |
 | FLOW-03 | Phase 2 | Pending |
