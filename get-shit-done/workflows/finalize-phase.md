@@ -136,7 +136,7 @@ Check git state before merge:
 ```bash
 # Get current branch
 CURRENT_BRANCH=$(git branch --show-current)
-EXPECTED_BRANCH="gsd/phase-${PHASE_NUMBER}-${PHASE_SLUG}"
+EXPECTED_BRANCH="phase-${PHASE_NUMBER}-${PHASE_SLUG}"
 
 # Check for uncommitted changes
 UNCOMMITTED=$(git status --porcelain)
@@ -148,13 +148,16 @@ fi
 ```
 
 **If uncommitted changes exist:**
-```
-## ⚠ Uncommitted Changes
-
-The following files have uncommitted changes:
-${UNCOMMITTED}
-
-Commit or stash these changes before finalizing.
+```bash
+if [ -n "$UNCOMMITTED" ]; then
+  echo "## X Uncommitted Changes"
+  echo ""
+  echo "The following files have uncommitted changes:"
+  echo "$UNCOMMITTED"
+  echo ""
+  echo "Commit or stash these changes before finalizing."
+  exit 1  # FLOW-03: Gate must block, not just warn
+fi
 ```
 
 **If on wrong branch:**
