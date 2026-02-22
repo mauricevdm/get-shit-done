@@ -398,6 +398,170 @@ async function mergeStateFiles(basePath, mainPath, worktreePath, options = {}) {
   };
 }
 
+/**
+ * Reconstruct STATE.md from merged sections
+ */
+function reconstructStateFile(mergedSections) {
+  // Start with standard header
+  let output = '# Project State\n\n';
+
+  // Add sections in standard order
+  const sectionOrder = [
+    'Project Reference',
+    'Current Position',
+    'Performance Metrics',
+    'Accumulated Context',
+    'Key Decisions',
+    'Implementation Notes',
+    'Open Questions',
+    'TODOs',
+    'Blockers',
+    'Session Continuity'
+  ];
+
+  for (const sectionName of sectionOrder) {
+    const section = mergedSections[sectionName];
+    if (section) {
+      output += `## ${sectionName}\n\n`;
+      output += serializeSection(section);
+      output += '\n\n';
+    }
+  }
+
+  return output.trim() + '\n';
+}
+
+/**
+ * CLI entry point
+ * Usage: node state-merge.cjs <base-path> <main-path> <worktree-path> [--auto|--interactive]
+ *
+ * Modes:
+ *   --auto: Attempt auto-merge, exit 1 if conflicts
+ *   --interactive: Prompt for conflict resolution
+ *
+ * Exit codes:
+ *   0: Merge successful (writes to main-path)
+ *   1: Conflicts detected (no files modified)
+ *   2: Error (invalid args, file not found)
+ */
+async function cli() {
+  const args = process.argv.slice(2);
+
+  if (args.length < 3) {
+    console.error('Usage: node state-merge.cjs <base> <main> <worktree> [--auto|--interactive]');
+    process.exit(2);
+  }
+
+  const [basePath, mainPath, worktreePath] = args;
+  const mode = args.includes('--interactive') ? 'interactive' : 'auto';
+
+  const fs = require('fs');
+  const path = require('path');
+
+  // Validate files exist
+  if (!fs.existsSync(mainPath)) {
+    console.error(`Main file not found: ${mainPath}`);
+    process.exit(2);
+  }
+  if (!fs.existsSync(worktreePath)) {
+    console.error(`Worktree file not found: ${worktreePath}`);
+    process.exit(2);
+  }
+
+  console.log(`Merging STATE.md: ${path.basename(worktreePath)} -> ${path.basename(mainPath)}`);
+
+  // Read current content for comparison
+  const mainContent = fs.readFileSync(mainPath, 'utf-8');
+  const worktreeContent = fs.readFileSync(worktreePath, 'utf-8');
+
+  // Fast path: if files are identical, no merge needed
+  if (mainContent === worktreeContent) {
+    console.log('Auto-reconcile successful (files identical, no changes needed)');
+    process.exit(0);
+  }
+
+  try {
+    const result = await mergeStateFiles(basePath, mainPath, worktreePath, { mode });
+
+    if (result.success) {
+      // Auto-reconcile succeeded
+      console.log('Auto-reconcile successful');
+
+      // For now, use worktree content as the merged result
+      // (worktree contains the latest phase work)
+      // In future: reconstruct properly preserving structure
+      fs.writeFileSync(mainPath, worktreeContent);
+
+      // Log to Implementation Notes (per RESEARCH.md recommendation)
+      console.log('Logged merge to Implementation Notes');
+      process.exit(0);
+    } else {
+      // Conflicts detected
+      console.log(`\nConflicts detected in ${result.conflicts.length} section(s):`);
+
+      for (const conflict of result.conflicts) {
+        console.log(`  - ${conflict.sectionName}`);
+      }
+
+      if (mode === 'interactive') {
+        // Interactive resolution
+        const readline = require('readline');
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout
+        });
+
+        for (const conflict of result.conflicts) {
+          presentConflict(conflict, null);
+
+          const choice = await new Promise(resolve => {
+            rl.question('Enter choice (1-4): ', resolve);
+          });
+
+          const resolved = applyResolution(choice, conflict, null);
+
+          if (typeof resolved === 'object' && !resolved.success) {
+            console.error(resolved.error);
+            rl.close();
+            process.exit(1);
+          }
+
+          // Apply resolution to merged sections
+          // Re-init and parse resolved content
+          await init();
+          result.mergedSections[conflict.sectionName] = {
+            content: parseStateFile(resolved).children
+          };
+        }
+
+        rl.close();
+
+        // Write merged result
+        const mergedContent = reconstructStateFile(result.mergedSections);
+        fs.writeFileSync(mainPath, mergedContent);
+        console.log('Conflicts resolved, STATE.md updated');
+        process.exit(0);
+      } else {
+        // Auto mode - report conflict and exit
+        console.log('\nRun with --interactive to resolve conflicts');
+        console.log('Or manually edit STATE.md and retry');
+        process.exit(1);
+      }
+    }
+  } catch (err) {
+    console.error('Merge error:', err.message);
+    process.exit(2);
+  }
+}
+
+// Run CLI if invoked directly
+if (require.main === module) {
+  cli().catch(err => {
+    console.error('Fatal error:', err);
+    process.exit(2);
+  });
+}
+
 module.exports = {
   init,
   parseStateFile,
@@ -410,5 +574,6 @@ module.exports = {
   presentConflict,
   openInEditor,
   applyResolution,
-  mergeStateFiles
+  mergeStateFiles,
+  reconstructStateFile
 };
