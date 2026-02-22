@@ -368,7 +368,11 @@ async function mergeStateFiles(basePath, mainPath, worktreePath, options = {}) {
     const worktreeSection = extractSection(worktreeTree, sectionName);
 
     // Check for conflicts that can't be auto-merged
-    if (mainSection && worktreeSection) {
+    // Skip conflict detection for strategies that never conflict
+    const strategy = getStrategy(sectionName);
+    const noConflictStrategies = ['worktree-wins', 'additive', 'union'];
+
+    if (mainSection && worktreeSection && !noConflictStrategies.includes(strategy)) {
       const mainText = serializeSection(mainSection);
       const worktreeText = serializeSection(worktreeSection);
       const baseText = baseSection ? serializeSection(baseSection) : '';
