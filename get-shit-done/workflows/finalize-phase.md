@@ -9,8 +9,9 @@ This workflow ensures a phase is properly closed out before moving to the next p
 1. UAT must be passed (status: passed in UAT.md)
 2. All tests must pass (if test suite exists)
 3. Verification must be complete (status: passed in VERIFICATION.md)
-4. Branch must be merged to main
-5. Worktree must be cleaned up
+4. STATE.md must be reconciled (auto-merge or manual resolution)
+5. Branch must be merged to main
+6. Worktree must be cleaned up
 
 If any gate fails, stop and report what needs to be fixed.
 </core_principle>
@@ -199,6 +200,113 @@ fi
 - Or switch to expected branch
 </step>
 
+<step name="reconcile_state">
+Reconcile STATE.md before merging branches to prevent conflicts:
+
+**1. Get merge base:**
+```bash
+MERGE_BASE=$(git merge-base main HEAD)
+```
+
+**2. Get base version of STATE.md:**
+```bash
+git show ${MERGE_BASE}:.planning/STATE.md > /tmp/state-base.md 2>/dev/null || touch /tmp/state-base.md
+```
+
+**3. Locate state-merge.cjs:**
+```bash
+# Check project repo first, then installed GSD
+REPO_ROOT=$(git rev-parse --show-toplevel)
+if [[ -f "${REPO_ROOT}/get-shit-done/bin/state-merge.cjs" ]]; then
+  STATE_MERGE="${REPO_ROOT}/get-shit-done/bin/state-merge.cjs"
+elif [[ -f "${HOME}/.claude/get-shit-done/bin/state-merge.cjs" ]]; then
+  STATE_MERGE="${HOME}/.claude/get-shit-done/bin/state-merge.cjs"
+else
+  echo "WARNING: state-merge.cjs not found, skipping STATE.md reconciliation"
+  STATE_MERGE=""
+fi
+```
+
+**4. Run state-merge in auto mode:**
+```bash
+if [[ -n "$STATE_MERGE" ]]; then
+  # Find main repo's STATE.md path
+  MAIN_REPO=$(git worktree list | grep -v "$(git branch --show-current)" | head -1 | awk '{print $1}')
+  MAIN_STATE="${MAIN_REPO}/.planning/STATE.md"
+  WORKTREE_STATE="${REPO_ROOT}/.planning/STATE.md"
+
+  node "$STATE_MERGE" /tmp/state-base.md "$MAIN_STATE" "$WORKTREE_STATE" --auto
+  STATE_MERGE_EXIT=$?
+fi
+```
+
+**5. Handle merge result:**
+
+| Exit Code | Meaning | Action |
+|-----------|---------|--------|
+| 0 | Success | STATE.md reconciled, proceed to git merge |
+| 1 | Conflicts | STOP - present conflicts, require resolution |
+| 2 | Error | Report error, abort finalization |
+
+If auto-reconcile succeeded (exit 0):
+- STATE.md is already updated in main repo
+- Commit the reconciled STATE.md:
+```bash
+if [[ "$STATE_MERGE_EXIT" == "0" ]]; then
+  cd "$MAIN_REPO"
+  git add .planning/STATE.md
+  git commit -m "chore(phase-${PHASE_NUMBER}): reconcile STATE.md before merge"
+  cd "$REPO_ROOT"
+fi
+```
+- Proceed to branch merge
+
+If conflicts detected (exit 1):
+```bash
+if [[ "$STATE_MERGE_EXIT" == "1" ]]; then
+  echo "## X STATE.md Conflict Gate"
+  echo ""
+  echo "STATE.md has conflicting changes that cannot be auto-merged."
+  echo ""
+  echo "Resolution options:"
+  echo "  1. Run: node $STATE_MERGE /tmp/state-base.md $MAIN_STATE $WORKTREE_STATE --interactive"
+  echo "  2. Manually edit STATE.md in main repo"
+  echo "  3. After resolution, re-run /gsd:finalize-phase ${PHASE_NUMBER}"
+  echo ""
+  echo "Worktree preserved at: ${REPO_ROOT}"
+  # FLOW-03: Gate must block, not just warn
+  exit 1
+fi
+```
+
+If error (exit 2):
+```bash
+if [[ "$STATE_MERGE_EXIT" == "2" ]]; then
+  echo "## ! STATE.md Merge Error"
+  echo ""
+  echo "An error occurred during STATE.md reconciliation."
+  echo "Check state-merge.cjs output above for details."
+  echo ""
+  echo "Continuing without STATE.md reconciliation..."
+  # Non-blocking - git merge may still succeed
+fi
+```
+
+**6. Validate registry-STATE consistency:**
+```bash
+# Registry says phase worktree exists
+if command -v node &> /dev/null; then
+  REGISTRY_STATUS=$(node ~/.claude/get-shit-done/bin/gsd-tools.cjs worktree get ${PHASE_NUMBER} 2>/dev/null | jq -r '.status // "not-found"' 2>/dev/null || echo "unknown")
+
+  # STATE.md should show phase in-progress
+  if ! grep -qi "Phase.*${PHASE_NUMBER}.*IN.PROGRESS\|phase-${PHASE_NUMBER}" .planning/STATE.md 2>/dev/null; then
+    echo "WARNING: Registry/STATE drift detected - phase ${PHASE_NUMBER} may not be tracked in STATE.md"
+    # Not blocking - just warning
+  fi
+fi
+```
+</step>
+
 <step name="merge_to_main">
 Merge the phase branch to main:
 
@@ -353,6 +461,7 @@ Present final summary:
 - **UAT not passed:** Direct to `/gsd:verify-work`
 - **Verification gaps:** Direct to `/gsd:plan-phase --gaps`
 - **Tests fail:** Must fix tests before finalizing
+- **STATE.md conflict:** Run state-merge.cjs --interactive or manually edit
 - **Merge conflict:** Provide manual resolution steps
 - **Worktree cleanup fails:** Provide manual cleanup commands
 - **Not in worktree:** Can still merge and skip cleanup step
@@ -362,6 +471,7 @@ Present final summary:
 - [ ] UAT status is "passed" (or not required)
 - [ ] Verification status is "passed"
 - [ ] Tests pass (or none exist)
+- [ ] STATE.md reconciled (auto or manual)
 - [ ] Branch merged to main successfully
 - [ ] Worktree removed (if applicable)
 - [ ] Lock released (if applicable)
