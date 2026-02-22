@@ -60,10 +60,12 @@ Plans:
   2. STATE.md changes in worktree accumulate phase-specific progress without affecting main
   3. Finalization merges STATE.md correctly (worktree wins for phase sections, main wins for global)
   4. STATE.md conflicts are detected and user receives clear manual resolution steps
-**Plans**: TBD
+**Plans:** 3 plans
 
 Plans:
-- [ ] 03-01: TBD
+- [ ] 03-01-PLAN.md — STATE.md parsing infrastructure with TDD (STATE-01, STATE-02)
+- [ ] 03-02-PLAN.md — Section merge strategies and conflict detection (STATE-02, STATE-03, STATE-04)
+- [ ] 03-03-PLAN.md — finalize-phase integration and end-to-end verification (STATE-03, STATE-04)
 
 ### Phase 4: Polish and Recovery
 **Goal**: Provide recovery tools for orphaned worktrees and incomplete operations
@@ -87,9 +89,9 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete | 2026-02-20 |
 | 2. Workflow Integration | 3/3 | Complete | 2026-02-20 |
-| 3. State Reconciliation | 0/1 | Not started | - |
+| 3. State Reconciliation | 0/3 | Planned | - |
 | 4. Polish and Recovery | 0/1 | Not started | - |
 
 ---
 *Roadmap created: 2026-02-20*
-*Last updated: 2026-02-20*
+*Last updated: 2026-02-22*
