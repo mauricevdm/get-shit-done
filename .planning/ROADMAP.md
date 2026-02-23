@@ -12,7 +12,7 @@ This roadmap delivers parallel phase execution through git worktree isolation. T
 
 - [x] **Phase 1: Foundation** - Worktree lifecycle, lock mechanism, and registry infrastructure
 - [x] **Phase 2: Workflow Integration** - execute-phase and finalize-phase worktree operations
-- [ ] **Phase 3: State Reconciliation** - STATE.md merge algorithm and conflict handling
+- [x] **Phase 3: State Reconciliation** - STATE.md merge algorithm and conflict handling
 - [ ] **Phase 4: Polish and Recovery** - Cleanup commands, orphan detection, and error recovery
 
 ## Phase Details
@@ -68,17 +68,18 @@ Plans:
 - [x] 03-03-PLAN.md — finalize-phase integration and end-to-end verification (STATE-03, STATE-04)
 
 ### Phase 4: Polish and Recovery
-**Goal**: Provide recovery tools for orphaned worktrees and incomplete operations
+**Goal**: Provide recovery tools for orphaned worktrees and incomplete operations via /gsd:health command
 **Depends on**: Phase 3
 **Requirements**: RECV-01, RECV-02, RECV-03
 **Success Criteria** (what must be TRUE):
   1. Orphaned worktrees (path deleted but .git reference remains) are detected and reported
   2. User can run cleanup command to remove stale worktrees safely
   3. Incomplete finalization (merge succeeded but cleanup failed) can be recovered gracefully
-**Plans**: TBD
+**Plans:** 2 plans
 
 Plans:
-- [ ] 04-01: TBD
+- [ ] 04-01-PLAN.md — Health detection infrastructure (orphans, stale locks, incomplete finalization)
+- [ ] 04-02-PLAN.md — Interactive repair workflow and /gsd:health command
 
 ## Progress
 
@@ -90,8 +91,8 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | 1. Foundation | 3/3 | Complete | 2026-02-20 |
 | 2. Workflow Integration | 3/3 | Complete | 2026-02-20 |
 | 3. State Reconciliation | 3/3 | Complete | 2026-02-22 |
-| 4. Polish and Recovery | 0/1 | Not started | - |
+| 4. Polish and Recovery | 0/2 | Planned | - |
 
 ---
 *Roadmap created: 2026-02-20*
-*Last updated: 2026-02-22*
+*Last updated: 2026-02-23*
