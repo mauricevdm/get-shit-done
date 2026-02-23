@@ -365,6 +365,42 @@ Branch ${PHASE_BRANCH} merged into main successfully.
 ```
 </step>
 
+<step name="write_finalization_marker">
+Create marker file to track finalization progress for recovery:
+
+```bash
+# Skip if merge failed - no cleanup will happen
+if [ "${MERGE_EXIT:-1}" != "0" ]; then
+  echo "Skipping marker creation: merge did not complete successfully"
+  exit 1
+fi
+
+MARKER_DIR=".planning/worktrees/finalization"
+MARKER_FILE="${MARKER_DIR}/phase-${PHASE_NUMBER}.json"
+mkdir -p "$MARKER_DIR"
+
+cat > "$MARKER_FILE" << EOF
+{
+  "phase": "${PHASE_NUMBER}",
+  "worktree_path": "${WORK_DIR}",
+  "branch": "${PHASE_BRANCH}",
+  "started": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "steps": {
+    "state_reconciled": true,
+    "merged": true,
+    "worktree_removed": "pending",
+    "lock_released": "pending",
+    "registry_updated": "pending"
+  }
+}
+EOF
+
+echo "Finalization marker created: ${MARKER_FILE}"
+```
+
+This marker enables `/gsd:health` to detect and recover from interrupted finalization.
+</step>
+
 <step name="cleanup_worktree">
 Remove the git worktree and release lock **only if merge succeeded** (FLOW-05):
 
@@ -376,6 +412,8 @@ if [ "${MERGE_EXIT:-1}" != "0" ]; then
   echo "Resolve merge issues and re-run finalize"
   exit 1
 fi
+
+MARKER_FILE=".planning/worktrees/finalization/phase-${PHASE_NUMBER}.json"
 
 # Locate phase-worktree.sh script
 REPO_ROOT=$(git rev-parse --show-toplevel)
@@ -390,12 +428,41 @@ if [ -f "$PHASE_WORKTREE" ]; then
   # Handles: git worktree unlock, git worktree remove, git branch -d, registry update
   "$PHASE_WORKTREE" remove "${PHASE_NUMBER}"
   CLEANUP_EXIT=$?
+
+  # Update marker after successful cleanup
+  if [ "${CLEANUP_EXIT:-0}" = "0" ] && [ -f "$MARKER_FILE" ]; then
+    # Update worktree_removed, lock_released, registry_updated to true
+    if command -v node &> /dev/null; then
+      node -e "
+        const fs = require('fs');
+        const marker = JSON.parse(fs.readFileSync('$MARKER_FILE', 'utf-8'));
+        marker.steps.worktree_removed = true;
+        marker.steps.lock_released = true;
+        marker.steps.registry_updated = true;
+        marker.completed = new Date().toISOString();
+        fs.writeFileSync('$MARKER_FILE', JSON.stringify(marker, null, 2));
+      " 2>/dev/null || true
+    fi
+  fi
 else
   # Manual worktree cleanup (fallback if script not available)
   git worktree unlock "${WORK_DIR}" 2>/dev/null || true
   git worktree remove "${WORK_DIR}" --force 2>/dev/null || true
   git branch -d "${PHASE_BRANCH}" 2>/dev/null || true
   CLEANUP_EXIT=0
+
+  # Update marker steps individually for manual cleanup
+  if [ -f "$MARKER_FILE" ] && command -v node &> /dev/null; then
+    node -e "
+      const fs = require('fs');
+      const marker = JSON.parse(fs.readFileSync('$MARKER_FILE', 'utf-8'));
+      marker.steps.worktree_removed = true;
+      marker.steps.lock_released = true;
+      marker.steps.registry_updated = true;
+      marker.completed = new Date().toISOString();
+      fs.writeFileSync('$MARKER_FILE', JSON.stringify(marker, null, 2));
+    " 2>/dev/null || true
+  fi
 fi
 
 if [ "${CLEANUP_EXIT:-0}" = "0" ]; then
@@ -411,6 +478,8 @@ else
   echo "  cd ${MAIN_REPO}"
   echo "  git worktree remove ${WORK_DIR} --force"
   echo "  git branch -d ${PHASE_BRANCH}"
+  echo ""
+  echo "Finalization marker preserved for recovery: ${MARKER_FILE}"
 fi
 ```
 </step>
@@ -426,6 +495,27 @@ Read current STATE.md and update:
 ```bash
 node ~/.claude/get-shit-done/bin/gsd-tools.cjs commit "docs(phase-${PHASE_NUMBER}): finalize phase - merged to main" --files .planning/STATE.md
 ```
+</step>
+
+<step name="remove_finalization_marker">
+Remove marker file after successful finalization:
+
+```bash
+MARKER_FILE=".planning/worktrees/finalization/phase-${PHASE_NUMBER}.json"
+
+if [ -f "$MARKER_FILE" ]; then
+  rm -f "$MARKER_FILE"
+  echo "Finalization marker removed: ${MARKER_FILE}"
+fi
+
+# Clean up empty finalization directory
+MARKER_DIR=".planning/worktrees/finalization"
+if [ -d "$MARKER_DIR" ] && [ -z "$(ls -A "$MARKER_DIR")" ]; then
+  rmdir "$MARKER_DIR" 2>/dev/null || true
+fi
+```
+
+Marker removal indicates clean completion. If marker remains, `/gsd:health` can detect and offer recovery.
 </step>
 
 <step name="report_completion">
