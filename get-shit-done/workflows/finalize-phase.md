@@ -41,6 +41,66 @@ MAIN_REPO=$(git rev-parse --show-toplevel 2>/dev/null)
 ```
 </step>
 
+<step name="check_prior_finalization">
+Check for incomplete finalization from prior sessions:
+
+```bash
+# Check for any marker files
+MARKER_DIR=".planning/worktrees/finalization"
+if [ -d "$MARKER_DIR" ] && [ "$(ls -A "$MARKER_DIR" 2>/dev/null)" ]; then
+  echo "Warning: Found incomplete finalization marker(s):"
+  ls -la "$MARKER_DIR"
+  echo ""
+  echo "A prior finalization did not complete cleanly."
+  echo "Run /gsd:health to diagnose and repair, or continue to finalize current phase."
+fi
+```
+
+**If marker exists for the CURRENT phase being finalized:**
+- Offer to resume the incomplete finalization instead of starting fresh
+- Use AskUserQuestion: "Prior finalization of phase ${PHASE_NUMBER} was interrupted. Resume? (y/n)"
+- If yes, skip to the step indicated in marker file (read marker to see which steps are pending)
+- If no, warn that this may leave orphaned resources
+
+```bash
+CURRENT_MARKER="${MARKER_DIR}/phase-${PHASE_NUMBER}.json"
+if [ -f "$CURRENT_MARKER" ]; then
+  echo ""
+  echo "======================="
+  echo "INCOMPLETE FINALIZATION DETECTED"
+  echo "======================="
+  echo ""
+  echo "Phase ${PHASE_NUMBER} has an incomplete finalization marker."
+  echo "This means a prior attempt to finalize this phase was interrupted."
+  echo ""
+
+  # Parse marker to show status
+  if command -v node &> /dev/null; then
+    node -e "
+      const fs = require('fs');
+      const marker = JSON.parse(fs.readFileSync('$CURRENT_MARKER', 'utf-8'));
+      console.log('Started: ' + marker.started);
+      console.log('Completed steps:');
+      for (const [step, status] of Object.entries(marker.steps || {})) {
+        const icon = status === true ? 'Y' : (status === 'pending' ? '?' : 'X');
+        console.log('  [' + icon + '] ' + step);
+      }
+    " 2>/dev/null
+  fi
+
+  echo ""
+  echo "Options:"
+  echo "  1. Resume - Run /gsd:health to complete interrupted finalization"
+  echo "  2. Continue - Proceed with fresh finalization (may create duplicates)"
+  echo "  3. Cancel - Abort and investigate manually"
+  echo ""
+  # Ask user for preference using AskUserQuestion tool
+fi
+```
+
+This ensures users are warned about incomplete operations AND can auto-resume via /gsd:health.
+</step>
+
 <step name="check_uat_status">
 Check if UAT has passed for this phase:
 
