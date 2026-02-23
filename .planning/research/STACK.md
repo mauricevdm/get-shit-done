@@ -1,341 +1,319 @@
-# Technology Stack: Git Worktree Management for Parallel Phase Execution
+# Technology Stack: Upstream Sync Tooling
 
-**Project:** GSD Worktree Isolation
-**Researched:** 2026-02-20
-**Focus:** Stack dimension for git worktree management in automated workflows
+**Project:** GSD v1.1 - Upstream Sync
+**Researched:** 2026-02-23
+**Focus:** Stack additions/changes for upstream sync features
 
 ## Executive Summary
 
-Git worktree is the standard approach for parallel branch development in 2025-2026. No additional libraries or tools are required - git worktree (available since Git 2.5) provides all necessary functionality. The key is proper shell script patterns for automation, lock management, and cleanup.
+Upstream sync tooling requires NO new runtime dependencies. All capabilities can be implemented using:
+1. Native git CLI commands (plumbing + porcelain)
+2. Existing Node.js built-ins (`child_process`, `fs`)
+3. Existing GSD patterns from `gsd-tools.cjs`
 
-**Recommendation:** Implement a `phase-worktree.sh` script using native git worktree commands. No external dependencies. Shell-native implementation for zero runtime cost.
+The key insight: Git already provides all the primitives needed for upstream sync. The work is in orchestrating git commands and parsing their output into actionable UX.
 
-## Recommended Stack
-
-### Core Technology
-
-| Technology | Version | Purpose | Why | Confidence |
-|------------|---------|---------|-----|------------|
-| `git worktree` | Git 2.5+ | Branch isolation | Built-in, no deps, shared .git objects, instant creation | HIGH |
-| POSIX shell | Any | Automation scripts | Zero dependencies, works everywhere, GSD constraint compliance | HIGH |
-| Lock files | N/A | Parallel coordination | Standard POSIX pattern, race-condition safe with `--lock` | HIGH |
-
-### Key Git Worktree Commands
-
-| Command | Purpose | When to Use |
-|---------|---------|-------------|
-| `git worktree add <path> -b <branch> [<start-point>] --lock` | Create isolated worktree | Starting phase execution |
-| `git worktree list --porcelain` | Machine-readable worktree inventory | Status checks, automation |
-| `git worktree remove <path> --force` | Clean removal | After phase finalization |
-| `git worktree lock <path> --reason <string>` | Prevent pruning | Mark worktree as in-use |
-| `git worktree unlock <path>` | Allow pruning | Before removal |
-| `git worktree prune` | Clean stale metadata | After removals |
-| `git worktree repair` | Fix moved worktrees | Recovery scenarios |
-
-**Confidence:** HIGH - Verified against [official git documentation](https://git-scm.com/docs/git-worktree)
-
-## Critical Pattern: Atomic Create with Lock
-
-**Problem:** Race condition between `git worktree add` and `git worktree lock`.
-
-**Solution:** Use `--lock` flag with add:
-
-```bash
-# WRONG: Race condition window exists
-git worktree add ../phase-03 -b gsd/phase-03
-git worktree lock ../phase-03  # Another process could prune between these
-
-# CORRECT: Atomic create + lock
-git worktree add ../phase-03 -b gsd/phase-03 main --lock --reason "GSD phase execution in progress"
-```
-
-**Why:** The `--lock` option keeps the worktree locked after creation. This is equivalent to `git worktree lock` after `git worktree add`, but without a race condition. There will be no gap that somebody can accidentally "prune" the new worktree.
-
-**Confidence:** HIGH - Documented in [git commit 507e6e9](https://github.com/git/git/commit/507e6e9eecce5e7a2cc204c844bbb2f9b17b31e3)
-
-## Recommended Script Implementation
-
-### phase-worktree.sh Interface
-
-```bash
-#!/usr/bin/env bash
-# .planning/scripts/phase-worktree.sh
-
-usage() {
-    cat << EOF
-Usage: phase-worktree.sh <command> [phase_number]
-
-Commands:
-    create <phase>    Create worktree for phase (claims lock)
-    remove <phase>    Remove worktree and release lock
-    path <phase>      Print worktree path for phase
-    status            List all phase worktrees and their status
-    cleanup           Prune stale worktree metadata
-
-Examples:
-    phase-worktree.sh create 03
-    phase-worktree.sh path 03
-    phase-worktree.sh status
-EOF
-}
-```
-
-### Directory Naming Convention
-
-```bash
-# Pattern: sibling directories with clear naming
-# <project>-phase-<N>-<slug>
-
-MAIN_REPO=$(git rev-parse --show-toplevel)
-PROJECT_NAME=$(basename "$MAIN_REPO")
-WORKTREE_DIR="${MAIN_REPO}/../${PROJECT_NAME}-phase-${PHASE_NUM}"
-BRANCH_NAME="gsd/phase-${PHASE_NUM}-${PHASE_SLUG}"
-```
-
-**Why sibling directories:**
-- Self-documenting (`myproject-phase-03-auth/`)
-- Easy tab completion
-- No nested `.gitignore` complexity
-- IDE opens each as separate project naturally
-
-**Confidence:** MEDIUM - Community consensus from multiple sources, though some prefer `.worktrees/` subdirectory
-
-### Create Worktree Pattern
-
-```bash
-create_worktree() {
-    local phase_num="$1"
-    local phase_slug="$2"
-    local start_point="${3:-main}"
-
-    local worktree_dir="${MAIN_REPO}/../${PROJECT_NAME}-phase-${phase_num}"
-    local branch_name="gsd/phase-${phase_num}-${phase_slug}"
-
-    # Check if branch already checked out elsewhere
-    if git worktree list --porcelain | grep -q "branch refs/heads/${branch_name}"; then
-        echo "ERROR: Branch ${branch_name} already checked out in another worktree" >&2
-        return 1
-    fi
-
-    # Atomic create + lock (race-condition safe)
-    git worktree add "$worktree_dir" -b "$branch_name" "$start_point" \
-        --lock --reason "GSD phase ${phase_num} execution"
-
-    echo "$worktree_dir"
-}
-```
-
-### Remove Worktree Pattern
-
-```bash
-remove_worktree() {
-    local phase_num="$1"
-    local worktree_dir="${MAIN_REPO}/../${PROJECT_NAME}-phase-${phase_num}"
-
-    # Unlock first (idempotent)
-    git worktree unlock "$worktree_dir" 2>/dev/null || true
-
-    # Remove with force (handles dirty worktrees)
-    git worktree remove "$worktree_dir" --force
-
-    # Clean up any stale metadata
-    git worktree prune
-}
-```
-
-### Status Check Pattern
-
-```bash
-list_worktrees() {
-    # Use --porcelain for machine-readable output
-    # Format: attribute<space>value per line, blank line between worktrees
-    git worktree list --porcelain | while IFS= read -r line; do
-        case "$line" in
-            worktree*)
-                current_path="${line#worktree }"
-                ;;
-            branch*)
-                branch="${line#branch refs/heads/}"
-                if [[ "$branch" == gsd/phase-* ]]; then
-                    phase_num=$(echo "$branch" | sed 's/gsd\/phase-\([0-9]*\).*/\1/')
-                    echo "Phase ${phase_num}: ${current_path} (${branch})"
-                fi
-                ;;
-            locked*)
-                echo "  [LOCKED] ${line#locked }"
-                ;;
-        esac
-    done
-}
-```
-
-**Confidence:** HIGH - `--porcelain` format is guaranteed stable across Git versions
-
-## What NOT to Do
-
-### Anti-Pattern 1: Manual Directory Deletion
-
-**Wrong:**
-```bash
-rm -rf ../myproject-phase-03
-```
-
-**Why bad:** Leaves stale entries in `.git/worktrees/`. Future operations may fail or behave unexpectedly.
-
-**Instead:**
-```bash
-git worktree remove ../myproject-phase-03 --force
-git worktree prune
-```
-
-### Anti-Pattern 2: Same Branch in Multiple Worktrees
-
-**Wrong:**
-```bash
-git worktree add ../worktree-1 -b feature-x
-git worktree add ../worktree-2 feature-x  # Already checked out!
-```
-
-**Why bad:** Git refuses by default. If forced, changes in one worktree silently affect the other.
-
-**Instead:** One worktree per branch, always.
-
-### Anti-Pattern 3: Forgetting Lock for Long-Running Operations
-
-**Wrong:**
-```bash
-git worktree add ../phase-03 -b gsd/phase-03
-# ... hours pass, automated pruning runs ...
-# Worktree metadata deleted!
-```
-
-**Instead:** Always use `--lock` for any worktree that will exist longer than a few minutes.
-
-### Anti-Pattern 4: Parsing `git worktree list` Human Format
-
-**Wrong:**
-```bash
-git worktree list | awk '{print $1}'  # Fragile, whitespace issues
-```
-
-**Instead:**
-```bash
-git worktree list --porcelain  # Stable, machine-readable
-```
-
-### Anti-Pattern 5: Moving Worktrees Manually
-
-**Wrong:**
-```bash
-mv ../phase-03 ../phase-03-old
-```
-
-**Why bad:** Breaks internal git references between worktree and main repo.
-
-**Instead:**
-```bash
-git worktree move ../phase-03 ../phase-03-old
-# Or if already moved accidentally:
-git worktree repair
-```
-
-**Confidence:** HIGH - Well-documented failure modes
-
-## Parallel Execution Considerations
-
-### Lock File Pattern for GSD
-
-For tracking which phases are currently being executed (beyond git worktree's built-in lock):
-
-```bash
-# Lock directory in main repo
-LOCK_DIR="${MAIN_REPO}/.planning/locks"
-mkdir -p "$LOCK_DIR"
-
-claim_phase_lock() {
-    local phase_num="$1"
-    local lock_file="${LOCK_DIR}/phase-${phase_num}.lock"
-
-    # Atomic lock creation using mkdir (POSIX-safe)
-    if ! mkdir "${lock_file}.d" 2>/dev/null; then
-        # Lock exists - check if still valid
-        local pid=$(cat "$lock_file" 2>/dev/null)
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            echo "Phase ${phase_num} locked by process ${pid}" >&2
-            return 1
-        fi
-        # Stale lock, remove and retry
-        rm -rf "${lock_file}.d" "$lock_file"
-        mkdir "${lock_file}.d" || return 1
-    fi
-
-    echo $$ > "$lock_file"
-    echo "Claimed lock for phase ${phase_num}"
-}
-
-release_phase_lock() {
-    local phase_num="$1"
-    local lock_file="${LOCK_DIR}/phase-${phase_num}.lock"
-    rm -rf "${lock_file}.d" "$lock_file" 2>/dev/null
-}
-```
-
-**Why mkdir:** `mkdir` is atomic on POSIX systems - it either succeeds or fails, no race window.
-
-**Confidence:** MEDIUM - Standard pattern but verify for GSD's specific concurrency model
-
-## Integration with Existing GSD Workflows
-
-### execute-phase.md Integration Points
-
-Current workflow references `phase-worktree.sh` at lines 40-59. The script should:
-
-1. `create <phase>` - Called when branching_strategy is "phase" or "milestone"
-2. `path <phase>` - Return worktree path for `cd` operation
-3. `status` - Check if worktree already exists
-
-### finalize-phase.md Integration Points
-
-Current workflow references cleanup at lines 223-237. The script should:
-
-1. `remove <phase>` - Clean removal with proper unlock
-2. Handle case where worktree doesn't exist (already cleaned)
-
-## Dependencies Analysis
-
-| Dependency | Required | Notes |
-|------------|----------|-------|
-| Git 2.5+ | YES | Worktree support introduced |
-| Git 2.17+ | Recommended | `--lock` flag added to `worktree add` |
-| POSIX shell | YES | `#!/usr/bin/env bash` |
-| Node.js | NO | Not needed for worktree management |
-| External libraries | NO | Pure git + shell |
-
-**Verification command:**
-```bash
-git --version  # Should be >= 2.17 for full feature support
-```
-
-## Alternatives Considered
-
-| Category | Recommended | Alternative | Why Not |
-|----------|-------------|-------------|---------|
-| Isolation mechanism | git worktree | git clone | Clone duplicates entire .git, wastes disk, changes not shared |
-| Isolation mechanism | git worktree | Docker containers | Overkill for branch isolation, adds complexity |
-| Script language | Shell (bash) | Node.js | GSD constraint: no runtime deps, shell is sufficient |
-| Lock mechanism | mkdir + git lock | File locks (flock) | flock not available everywhere, mkdir is POSIX |
-| Wrapper tool | Custom script | git-worktree-runner | External dep, more features than needed |
-
-## Sources
-
-- [Git Worktree Official Documentation](https://git-scm.com/docs/git-worktree) - HIGH confidence
-- [Git Commit 507e6e9: --lock option](https://github.com/git/git/commit/507e6e9eecce5e7a2cc204c844bbb2f9b17b31e3) - HIGH confidence
-- [How Git Worktrees Changed My AI Agent Workflow (Nx Blog)](https://nx.dev/blog/git-worktrees-ai-agents) - MEDIUM confidence
-- [Using Git Worktrees for Multi-Feature Development with AI Agents](https://www.nrmitchi.com/2025/10/using-git-worktrees-for-multi-feature-development-with-ai-agents/) - MEDIUM confidence
-- [Git Worktree: Pros, Cons, and the Gotchas Worth Knowing](https://joshtune.com/posts/git-worktree-pros-cons/) - MEDIUM confidence
-- [coderabbitai/git-worktree-runner](https://github.com/coderabbitai/git-worktree-runner) - Reference implementation patterns
-- [Mastering Git Worktrees: Avoiding Common Pitfalls](https://infinitejs.com/posts/mastering-git-worktrees-pitfalls/) - MEDIUM confidence
+**Recommendation:** Add new commands to `gsd-tools.cjs` using the existing `execGit()` helper. Create a new `lib/upstream.cjs` module following the `worktree.cjs` / `health.cjs` pattern.
 
 ---
 
-*Stack research: 2026-02-20*
+## Recommended Stack
+
+### Core Git Commands (No Changes Needed)
+
+These git commands form the foundation. All are available in Git 2.17+ (already required by GSD).
+
+| Command | Purpose | Output Format | Confidence |
+|---------|---------|---------------|------------|
+| `git remote add upstream <url>` | Configure upstream | Exit code | HIGH |
+| `git fetch upstream` | Fetch upstream commits | Summary text | HIGH |
+| `git rev-list main..upstream/main` | List commits to sync | Hash per line | HIGH |
+| `git log --format=<fmt>` | Commit details | Custom format | HIGH |
+| `git merge-tree $(git merge-base HEAD upstream/main) HEAD upstream/main` | Conflict preview | Conflict markers | HIGH |
+| `git diff --stat main..upstream/main` | Changed files summary | Stat output | HIGH |
+| `git merge upstream/main --no-ff` | Perform merge | Merge result | HIGH |
+| `git shortlog -s --group=author main..upstream/main` | Group by author | Count + author | HIGH |
+
+**Source:** [Git Documentation](https://git-scm.com/docs) - verified current as of 2026-02
+
+### New GSD Module: `lib/upstream.cjs`
+
+Following the established pattern from `worktree.cjs` and `health.cjs`:
+
+| Component | Purpose | Pattern Reference |
+|-----------|---------|-------------------|
+| `cmdUpstreamConfigure` | Set up upstream remote | Similar to `cmdWorktreeInit` |
+| `cmdUpstreamStatus` | Show behind/ahead count | Uses `git rev-list --count` |
+| `cmdUpstreamFetch` | Fetch and report new commits | Uses `execGit` wrapper |
+| `cmdUpstreamAnalyze` | Parse commits into groups | New logic, outputs JSON |
+| `cmdUpstreamConflicts` | Preview conflicts pre-merge | Uses `git merge-tree` |
+| `cmdUpstreamMerge` | Execute merge with validation | Uses `git merge` |
+
+**Integration:** Module exports functions consumed by main `gsd-tools.cjs` command router.
+
+### Git Plumbing for Conflict Detection
+
+The `git merge-tree` command (modern `--write-tree` mode, Git 2.38+) enables conflict preview without touching the working tree.
+
+```bash
+# Modern syntax (Git 2.38+)
+git merge-tree --write-tree HEAD upstream/main
+
+# Legacy fallback (Git 2.17+)
+git merge-tree $(git merge-base HEAD upstream/main) HEAD upstream/main
+```
+
+**Output parsing:**
+- Exit code 0 = clean merge possible
+- Exit code 1 = conflicts exist
+- Stdout contains tree OID and conflict file list
+
+**Confidence:** HIGH - Verified via [git-merge-tree documentation](https://git-scm.com/docs/git-merge-tree)
+
+### Commit Analysis Strategy
+
+#### Grouping Commits by Directory
+
+Git doesn't have built-in commit grouping by file/directory. Implement via `git log` with custom format:
+
+```bash
+# Get commits with primary directory touched
+git log --format="%H" main..upstream/main | while read hash; do
+  primary_dir=$(git diff-tree --no-commit-id --name-only -r "$hash" | cut -d/ -f1 | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+  echo "$hash:$primary_dir"
+done
+```
+
+**Alternative:** Use `--name-only` and parse in JavaScript for better control.
+
+**Confidence:** MEDIUM - Custom implementation, but uses stable git primitives
+
+#### Conventional Commit Parsing
+
+For commit messages following conventional commits format, use regex parsing:
+
+```javascript
+// Pattern for conventional commits
+const conventionalPattern = /^(?<type>\w+)(?:\((?<scope>[^()]+)\))?(?<breaking>!)?:\s*(?<description>.+)/;
+```
+
+**Source:** [Conventional Commits Regex (GitHub Gist)](https://gist.github.com/marcojahn/482410b728c31b221b70ea6d2c433f0c)
+
+**Confidence:** HIGH - Well-established pattern, works with existing GSD commit conventions
+
+---
+
+## Integration Points with Existing GSD Code
+
+### Existing Patterns to Reuse
+
+| Pattern | Location | How to Reuse |
+|---------|----------|--------------|
+| `execGit(cwd, args)` | gsd-tools.cjs:243 | Use for all git command execution |
+| `loadConfig(cwd)` | gsd-tools.cjs:178 | Check for upstream sync settings |
+| `output(data, raw, plaintext)` | Throughout | Consistent JSON/human output |
+| `error(message)` | Throughout | Consistent error handling |
+| Module structure | lib/worktree.cjs | Follow export pattern |
+| State persistence | STATE.md patterns | Log sync events |
+
+### New Config Fields
+
+Add to `.planning/config.json`:
+
+```json
+{
+  "upstream": {
+    "remote_name": "upstream",
+    "remote_url": null,
+    "default_branch": "main",
+    "merge_strategy": "merge",
+    "auto_verify": true
+  }
+}
+```
+
+**Confidence:** HIGH - Follows existing config.json structure
+
+### STATE.md Integration
+
+Track upstream sync state in Implementation Notes section:
+
+```markdown
+## Implementation Notes
+- [2026-02-23] Upstream sync: Merged 15 commits from upstream/main (abc123..def456)
+```
+
+---
+
+## Git Commands by Feature
+
+### Feature: `upstream configure <url>`
+
+```bash
+git remote add upstream "$URL" 2>/dev/null || git remote set-url upstream "$URL"
+git fetch upstream --tags
+```
+
+### Feature: `upstream status`
+
+```bash
+# Behind count (commits upstream has that we don't)
+git rev-list --count HEAD..upstream/main
+
+# Ahead count (commits we have that upstream doesn't)
+git rev-list --count upstream/main..HEAD
+
+# Last sync (when upstream/main was last fetched)
+git log -1 --format="%ci" upstream/main
+```
+
+### Feature: `upstream log` (grouped)
+
+```bash
+# Raw commit data in parseable format
+git log --format="COMMIT:%H%nAUTHOR:%an%nDATE:%ci%nSUBJECT:%s%nFILES:" main..upstream/main
+git diff-tree --no-commit-id --name-only -r <hash>
+```
+
+Parse output in JavaScript to group by:
+1. Primary directory (most files touched)
+2. Conventional commit type (feat, fix, docs, etc.)
+3. Author
+
+### Feature: `upstream conflicts`
+
+```bash
+# Modern (Git 2.38+) - preferred
+git merge-tree --write-tree HEAD upstream/main
+
+# Exit code: 0 = clean, 1 = conflicts
+# Output: <tree-oid>\n<conflicted-file-info>
+```
+
+Parse output:
+```javascript
+const result = execGit(cwd, ['merge-tree', '--write-tree', 'HEAD', 'upstream/main']);
+const lines = result.stdout.split('\n');
+const treeOid = lines[0];
+const hasConflicts = result.exitCode !== 0;
+const conflictedFiles = lines.slice(1).filter(l => l.includes('CONFLICT'));
+```
+
+### Feature: `upstream merge`
+
+```bash
+# Pre-checks
+git diff --quiet || error "Working tree not clean"
+git diff --cached --quiet || error "Index not clean"
+
+# Fetch latest
+git fetch upstream
+
+# Merge with descriptive message
+git merge upstream/main --no-ff -m "sync: Merge upstream changes
+
+Commits merged: $(git rev-list --count HEAD..upstream/main)
+Range: $(git rev-parse --short HEAD)..$(git rev-parse --short upstream/main)"
+```
+
+---
+
+## What NOT to Add
+
+### No External Dependencies
+
+GSD constraint: zero runtime dependencies. These are explicitly rejected:
+
+| Library | Why Tempting | Why Rejected |
+|---------|--------------|--------------|
+| `simple-git` | Nice Promise API | Runtime dependency |
+| `parse-diff` | Easy diff parsing | Runtime dependency |
+| `conventional-commits-parser` | Commit message parsing | Runtime dependency |
+| `isomorphic-git` | Pure JS git | Runtime dependency, massive |
+| `nodegit` | Native bindings | Native dependency, complex |
+
+**Instead:** Parse git output directly. Git's `--porcelain` and format options provide stable, machine-readable output.
+
+### No New Binary Tools
+
+| Tool | Why Tempting | Why Rejected |
+|------|--------------|--------------|
+| `gh` (GitHub CLI) | PR creation | Adds GitHub dependency to git tool |
+| `delta` | Pretty diffs | Not available everywhere |
+| `tig` | Interactive git | TUI complexity |
+
+**Instead:** Use standard git commands. Let users invoke `gh` separately if needed.
+
+### No Database/Persistence
+
+| Approach | Why Tempting | Why Rejected |
+|----------|--------------|--------------|
+| SQLite for commit cache | Fast repeat queries | Runtime dependency |
+| Redis for state | Shared state across sessions | Overkill, external service |
+
+**Instead:** Use existing STATE.md and ephemeral JSON output. Git is the source of truth.
+
+---
+
+## Version Requirements
+
+| Component | Minimum Version | Required For | Check Command |
+|-----------|-----------------|--------------|---------------|
+| Git | 2.17 | `worktree --lock` | `git --version` |
+| Git | 2.38 | `merge-tree --write-tree` | (falls back gracefully) |
+| Node.js | 18.0 | Built-in fetch, modern APIs | `node --version` |
+
+**Fallback strategy:** If `git merge-tree --write-tree` fails (Git < 2.38), use legacy three-tree syntax:
+```bash
+git merge-tree $(git merge-base HEAD upstream/main) HEAD upstream/main
+```
+
+---
+
+## Implementation Roadmap
+
+### Phase 1: Core Module Structure
+
+1. Create `lib/upstream.cjs` following `worktree.cjs` pattern
+2. Add upstream command routing to `gsd-tools.cjs`
+3. Implement `cmdUpstreamConfigure`, `cmdUpstreamStatus`
+
+### Phase 2: Analysis Commands
+
+4. Implement `cmdUpstreamFetch` with commit counting
+5. Implement `cmdUpstreamAnalyze` with grouping logic
+6. Implement `cmdUpstreamConflicts` using merge-tree
+
+### Phase 3: Merge Operations
+
+7. Implement `cmdUpstreamMerge` with pre-checks
+8. Add STATE.md logging for sync events
+9. Integration with `/gsd:verify-work` for post-merge validation
+
+---
+
+## Sources
+
+### Authoritative (HIGH Confidence)
+
+- [Git Documentation - git-merge-tree](https://git-scm.com/docs/git-merge-tree) - Conflict detection
+- [Git Documentation - git-rev-list](https://git-scm.com/docs/git-rev-list) - Commit range filtering
+- [Git Documentation - git-shortlog](https://git-scm.com/docs/git-shortlog) - Commit grouping
+- [Git Documentation - git-diff-tree](https://git-scm.com/docs/git-diff-tree) - File changes per commit
+- [GitHub Docs - Syncing a fork](https://docs.github.com/articles/syncing-a-fork) - Standard workflow
+
+### Community Patterns (MEDIUM Confidence)
+
+- [Atlassian - Git Upstreams and Forks](https://www.atlassian.com/git/tutorials/git-forks-and-upstreams) - Workflow guide
+- [Conventional Commits Regex](https://gist.github.com/marcojahn/482410b728c31b221b70ea6d2c433f0c) - Commit parsing
+- [GitHub Community - Fork Sync Best Practices](https://github.com/orgs/community/discussions/153608) - Community discussion
+
+### Existing GSD Code (HIGH Confidence)
+
+- `gsd-tools.cjs` - Command structure, `execGit()` pattern
+- `lib/worktree.cjs` - Module structure pattern
+- `lib/health.cjs` - Complex logic module pattern
+
+---
+
+*Stack research for upstream sync: 2026-02-23*

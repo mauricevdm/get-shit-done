@@ -1,198 +1,284 @@
 # Project Research Summary
 
-**Project:** GSD Worktree Isolation
-**Domain:** Git worktree management for parallel AI-assisted phase execution
-**Researched:** 2026-02-20
+**Project:** GSD v1.1 - Upstream Sync Tooling
+**Domain:** Fork maintenance and upstream synchronization for AI-assisted workflows
+**Researched:** 2026-02-23
 **Confidence:** HIGH
 
 ## Executive Summary
 
-Git worktree is the proven solution for parallel branch isolation in AI-assisted development workflows. The technology is mature (Git 2.5+, with `--lock` flag in 2.17+), requires zero external dependencies, and integrates naturally with GSD's existing phase-based execution model. The existing `execute-phase.md` and `finalize-phase.md` workflows already reference worktree operations but lack implementation — this project fills that gap with a `phase-worktree.sh` script and gsd-tools extensions.
+Upstream sync tooling for fork maintenance requires NO new runtime dependencies. All capabilities are achievable using native Git CLI commands (plumbing + porcelain), existing Node.js built-ins, and established GSD patterns. The recommended approach creates a new `lib/upstream.cjs` module following the proven `worktree.cjs` / `health.cjs` pattern, with new gsd-tools subcommands (`upstream fetch`, `upstream analyze`, `upstream conflicts`, `upstream merge`) and a `/gsd:sync-upstream` workflow.
 
-The recommended approach is a shell-native implementation using atomic `git worktree add --lock` for creation, directory-based locks (`mkdir` is POSIX-atomic) for coordination, and a JSON registry for worktree tracking. Each phase gets its own branch (`gsd/phase-{N}-{slug}`) in a sibling directory. The architecture adds four components: Worktree Manager (shell script), Lock Registry (JSON file), Registry (worktree paths), and State Reconciliation (merge algorithm for STATE.md).
+The key insight from research is that upstream sync is about **informed decision-making**, not automation. Fork maintainers need to understand what changed upstream, predict conflicts, and verify merges worked. Table stakes features (configure, fetch, status, merge) replicate manual git workflows; the differentiators that justify the tooling are: commit grouping by feature/area, pre-merge conflict preview using `git merge-tree`, interactive exploration mode, and post-merge verification integration. The design explicitly avoids anti-features like automatic scheduled sync, multi-remote support, and automatic conflict resolution.
 
-The primary risks are merge conflicts from parallel work, orphaned worktrees from improper cleanup, and missing dependencies in new worktrees. These are mitigated by: (1) planning wave-based parallelism to minimize file overlap, (2) mandatory `git worktree remove` via finalize-phase, and (3) post-create hooks that run `npm install` and copy `.env` files. The implementation should proceed in four phases: Foundation, Workflow Integration, State Reconciliation, and Polish.
+The primary risks are: (1) sync destroying custom fork enhancements (mitigated by safe defaults, backup branches, merge-not-reset approach), (2) merge conflicts in customized files (mitigated by pre-merge conflict detection, rename tracking), (3) partial sync corruption (mitigated by atomic operations with rollback), and (4) interaction with active worktrees (mitigated by worktree awareness and coordination). The existing `state-merge.cjs` is NOT suitable for upstream syncs - it's designed for worktree-to-main merges and needs a separate upstream merge strategy.
 
 ## Key Findings
 
 ### Recommended Stack
 
-The stack is minimal by design: native Git commands wrapped in POSIX shell scripts. No Node.js runtime, no external dependencies, no wrapper libraries.
+The stack requires no additions - all capabilities use existing GSD infrastructure plus native Git commands.
 
-**Core technologies:**
-- **git worktree (Git 2.17+):** Branch isolation — built-in, shared .git objects, instant creation, `--lock` flag for atomic locking
-- **POSIX shell (bash):** Automation scripts — zero dependencies, works everywhere, aligns with GSD's constraint compliance
-- **Directory-based locks (mkdir):** Parallel coordination — atomic on all platforms, survives crashes better than flock
-- **JSON registry:** Worktree tracking — explicit state beats parsing `git worktree list` output
+**Core Git Commands (all available in Git 2.17+, already required by GSD):**
+- `git remote add/set-url upstream <url>` - Configure upstream remote
+- `git fetch upstream` - Fetch upstream commits
+- `git rev-list --count HEAD..upstream/main` - Behind/ahead counts
+- `git merge-tree --write-tree HEAD upstream/main` - Conflict preview (Git 2.38+, with legacy fallback)
+- `git log --format=<fmt> main..upstream/main` - Commit analysis
+- `git merge upstream/main --no-ff` - Perform merge
 
-**Critical commands:**
-- `git worktree add <path> -b <branch> <start-point> --lock` — atomic create + lock
-- `git worktree list --porcelain` — machine-readable status
-- `git worktree remove <path> --force` — safe cleanup
-- `git worktree prune` — metadata cleanup
+**New Module:** `lib/upstream.cjs` following existing patterns
+- Export pure functions for each operation
+- CLI interface via gsd-tools.cjs routing
+- No dependencies on gsd-tools.cjs internals
+- Testable in isolation
+
+**Integration Points:**
+- Reuse `execGit(cwd, args)` helper from gsd-tools.cjs
+- Store config in `.planning/config.json` under new `upstream` section
+- Log sync events to STATE.md Implementation Notes section
 
 ### Expected Features
 
-**Must have (table stakes):**
-- Worktree lifecycle: create, list, remove, path derivation
-- Branch-per-phase isolation with unique naming (`gsd/phase-{N}-{slug}`)
-- Lock management to prevent concurrent phase execution
-- Existing worktree detection (switch instead of recreate)
-- Basic cleanup: remove worktree and branch after merge
+**Table Stakes (must have for v1.1):**
+| Feature | Complexity | Notes |
+|---------|------------|-------|
+| Upstream remote configuration | Low | Git handles it |
+| Fetch upstream commits | Low | Standard git fetch |
+| Behind/ahead status | Low | `git rev-list --count` |
+| Commit log from upstream | Low | `git log` with custom format |
+| Basic merge operation | Low | `git merge upstream/main` |
+| Pre-merge conflict detection | Medium | `git merge-tree` is reliable |
+| Post-merge test execution | Low | Reuses existing `/gsd:verify-work` |
 
-**Should have (differentiators):**
-- Post-create hooks: auto-run `npm install`, copy `.env.example`
-- Post-merge cleanup automation (merge + prune + delete branch + remove worktree)
-- Progress integration: show worktree status in `/gsd:progress`
-- Pre-merge verification: run tests before allowing merge
+**Differentiators (v1.1 scope):**
+| Feature | Value Proposition | Complexity |
+|---------|-------------------|------------|
+| Commit grouping by feature/area | See related changes together instead of chronological wall | Medium |
+| Interactive explore mode | Deep dive into specific changes before merge decision | Medium |
+| Pre-merge conflict preview | Know exactly what conflicts BEFORE attempting merge | Medium |
+| Post-merge verification suite | Run existing GSD verify-work patterns | Low |
 
-**Defer (v2+):**
-- Shared node_modules symlinks (breaks with different branch deps)
-- GUI/web worktree manager (violates CLI-first design)
-- Cross-worktree file watching (complex, race-prone)
-- Automatic rebasing (dangerous when automated)
-- Built-in AI session management (Claude Code handles this natively)
+**Defer to v2+:**
+- Selective sync / cherry-pick workflow (too many edge cases)
+- Multi-remote sync (rarely needed, explosion of edge cases)
+- Automatic scheduled sync (GSD is session-based)
+- Smart merge strategy recommendation (needs more usage data)
 
 ### Architecture Approach
 
-The architecture adds a thin wrapper layer around Git worktree operations, integrated with existing GSD workflows. Worktrees are created as siblings to the main repo (predictable paths, no nested `.gitignore` complexity) and tracked via a JSON registry in `.planning/worktrees/`. STATE.md in worktrees diverges from main repo during execution, requiring reconciliation on merge.
+The architecture follows existing GSD patterns exactly: command -> workflow -> gsd-tools -> lib module.
 
-**Major components:**
-1. **Worktree Manager** (`phase-worktree.sh`) — create, list, status, path, remove worktrees; manage Git-level locks
-2. **Lock Registry** (`.planning/worktrees/locks/`) — directory-based locks prevent concurrent phase execution
-3. **Registry** (`.planning/worktrees/registry.json`) — track active worktrees with paths, branches, status
-4. **State Reconciliation** (gsd-tools command) — merge STATE.md from worktree with main repo on finalization
+**New Components:**
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| `upstream.cjs` | `get-shit-done/bin/lib/` | Core sync operations |
+| `sync-upstream.md` | `commands/gsd/` | Command entry point |
+| `sync-upstream.md` | `get-shit-done/workflows/` | Orchestration workflow |
 
-**Data flow:**
-1. `/gsd:execute-phase N` triggers lock acquisition + worktree creation
-2. Executor agents run plans in isolated worktree, committing to phase branch
-3. `/gsd:finalize-phase N` runs verification, merges to main, reconciles STATE.md, removes worktree
+**Modified Components:**
+| Component | Changes |
+|-----------|---------|
+| `gsd-tools.cjs` | Add `upstream` command routing (~30 lines) |
+| `config.json` schema | Add `upstream` section |
+| `STATE.md` | Add sync tracking in Implementation Notes |
+
+**Component Boundaries:**
+- `lib/upstream.cjs` executes git commands and returns structured data
+- Workflow orchestrates steps and handles user decisions
+- Workflow handles checkpoints, module does not make decisions
+
+**Anti-Patterns to Avoid:**
+- Direct git commands in workflows (always go through gsd-tools)
+- Module-level state (use file-based state via config.json)
+- Agent doing everything (agents analyze, workflows execute)
 
 ### Critical Pitfalls
 
-1. **Orphaned worktrees from manual deletion** — Never `rm -rf` a worktree directory. Always use `git worktree remove`. Include automatic `git worktree prune` on startup of worktree operations.
+**1. Sync Destroys Custom Enhancements (CRITICAL)**
+- **Risk:** User loses months of customizations via `reset --hard`
+- **Prevention:** Never use reset by default. Auto-create `backup/pre-sync-{timestamp}` branch. Default to merge strategy. Show diff summary before executing.
+- **Phase:** Address in Phase 1
 
-2. **Missing dependencies in new worktrees** — Worktrees are clean checkouts; node_modules and .env don't exist. Implement post-create hooks that copy environment files and run `npm install` before returning success.
+**2. Merge Conflicts in Customized Files (CRITICAL)**
+- **Risk:** 20+ file conflicts with no guidance on resolution
+- **Prevention:** Pre-merge conflict check via `git merge-tree`. Categorize conflicts. Show which files conflict and type BEFORE merge.
+- **Phase:** Address in Phase 2
 
-3. **Branch lock conflicts** — Git only allows one worktree per branch. Check `git worktree list` before creation; provide clear error messages with worktree location.
+**3. Rename/Delete Conflicts Break Auto-Merge (CRITICAL)**
+- **Risk:** Upstream renames file that fork modified; Git sees delete+create, not rename+modify
+- **Prevention:** Detect renames explicitly with `--find-renames`. Map which files fork modified. Interactive rename handling.
+- **Phase:** Address in Phase 2
 
-4. **Self-created merge conflicts from parallel agents** — Worktrees isolate files but not coordination. Mitigate via: wave-based planning to minimize file overlap, pre-merge conflict detection with `git merge-tree`, and tracking which files each worktree modifies.
+**4. Partial Sync Leaves Repository Corrupted (CRITICAL)**
+- **Risk:** User abandons merge partway; repo stuck in merge state
+- **Prevention:** Atomic operations with rollback. Check for `.git/MERGE_HEAD` before sync. Provide `sync --abort` command.
+- **Phase:** Address in Phase 3
 
-5. **Path resolution failures in scripts** — Worktree `.git` is a file, not a directory. Use `git rev-parse --show-toplevel` for repo root, `git rev-parse --git-common-dir` for main repo paths.
+**5. Upstream Force Push Breaks History (CRITICAL)**
+- **Risk:** Upstream rewrites history; fork tracking becomes inconsistent
+- **Prevention:** Track upstream commit SHA. Detect force push before sync. Warn and provide rebase-based recovery.
+- **Phase:** Address in Phase 1
+
+**6. STATE.md Merge Conflicts with Worktree System (MODERATE)**
+- **Risk:** Existing `state-merge.cjs` designed for worktree merges, not upstream syncs
+- **Prevention:** Create separate upstream merge strategy. Fork state generally wins. Don't reuse worktree merge code.
+- **Phase:** Address in Phase 3
+
+**7. Sync During Active Phase Execution (MODERATE)**
+- **Risk:** Sync modifies main while worktree is active; finalize-phase has unexpected conflicts
+- **Prevention:** Check for active worktrees before sync. Warn user. Offer to update worktree bases after sync.
+- **Phase:** Address in Phase 4
 
 ## Implications for Roadmap
 
-Based on research, suggested phase structure:
+Based on combined research, the suggested phase structure follows dependencies and risk mitigation order.
 
-### Phase 1: Foundation (Core Infrastructure)
+### Phase 1: Core Sync Infrastructure
 
-**Rationale:** Lock mechanism and registry must exist before any worktree operations. These can be built and tested without modifying existing workflows.
-
-**Delivers:**
-- Directory-based locks in `.planning/worktrees/locks/`
-- JSON registry for worktree tracking
-- `phase-worktree.sh` with create, status, path, remove, list commands
-- gsd-tools worktree subcommands
-
-**Addresses:** Worktree lifecycle (table stakes), lock management, existing worktree detection
-
-**Avoids:** Orphaned worktrees (automatic prune), branch conflicts (pre-flight check), path resolution (use `--show-toplevel`)
-
-### Phase 2: Workflow Integration
-
-**Rationale:** With foundation complete, update existing workflows to use worktree operations. Requires Phase 1 complete for testing.
+**Rationale:** Foundation must exist before any sync operations. Safe defaults prevent the most dangerous pitfalls (data loss). Force push detection catches history issues early.
 
 **Delivers:**
-- Updated `execute-phase.md` with worktree creation on `branching_strategy: "phase"`
-- Updated `finalize-phase.md` with state reconciliation and cleanup
-- Post-create hooks for dependency installation and env file copying
+- `lib/upstream.cjs` module with core functions
+- `upstream configure <url>` command
+- `upstream status` command (behind/ahead, last sync)
+- `upstream fetch` command with commit counting
+- Pre-sync backup branch creation
+- Force push detection
+- New `upstream` section in config.json
 
-**Uses:** phase-worktree.sh commands, gsd-tools worktree commands
+**From FEATURES:** Upstream remote config, fetch, behind/ahead status (table stakes)
 
-**Implements:** Worktree Manager integration, Lock Registry coordination
+**Avoids Pitfalls:** #1 (safe defaults), #5 (force push detection), #7 (clear UX for fetch vs merge)
 
-**Avoids:** Missing dependencies (post-create hooks), incomplete cleanup (gsd-tools remove)
+**Research Needed:** None - standard git patterns, well-documented
 
-### Phase 3: State Reconciliation
+### Phase 2: Analysis and Conflict Detection
 
-**Rationale:** STATE.md divergence handling is complex and benefits from testing integration in Phase 2. Edge cases need careful handling.
-
-**Delivers:**
-- `gsd-tools state reconcile` command
-- Merge algorithm: worktree wins for phase-specific, main wins for global
-- Conflict handling with manual resolution steps
-
-**Implements:** State Reconciliation component
-
-**Avoids:** Silent state loss (reconciliation preserves both sides), merge conflict confusion (clear conflict markers)
-
-### Phase 4: Polish and Recovery
-
-**Rationale:** Recovery commands and documentation are polish; core functionality must be stable first.
+**Rationale:** Users need visibility before action. Conflict preview is the biggest differentiator - eliminates surprise conflicts.
 
 **Delivers:**
-- `worktree cleanup --stale` command for orphaned worktree recovery
-- `worktree repair` for crash recovery
-- Show active worktrees in `/gsd:progress`
-- Documentation and IDE setup guidance
+- `upstream log` command with commit grouping by directory/scope
+- `upstream analyze` command for structured JSON output
+- `upstream conflicts` command using `git merge-tree`
+- Rename detection and mapping
+- Binary file conflict flagging
+- Conventional commit parsing
 
-**Addresses:** Worktree health checks, status dashboard (differentiators)
+**From FEATURES:** Commit log, commit grouping by feature/area, pre-merge conflict preview (differentiators)
+
+**Avoids Pitfalls:** #2 (pre-merge conflict check), #3 (rename detection), #8 (binary handling)
+
+**Research Needed:** Commit grouping heuristics may need iteration during planning
+
+### Phase 3: Merge Execution
+
+**Rationale:** Most dangerous operation comes after users are fully informed. Atomic operations with rollback prevent corruption.
+
+**Delivers:**
+- `upstream merge` command with pre-checks
+- Atomic merge with rollback on failure
+- `upstream abort` command for recovery
+- Clean working tree validation
+- Descriptive merge commit messages
+- STATE.md sync logging (separate from worktree merge logic)
+- Integration with `/gsd:verify-work` for post-merge validation
+
+**From FEATURES:** Basic merge, post-merge verification (table stakes + differentiator)
+
+**Avoids Pitfalls:** #4 (atomic operations), #6 (separate state strategy)
+
+**Research Needed:** STATE.md upstream merge strategy needs careful design
+
+### Phase 4: Integration and Polish
+
+**Rationale:** Coordination with existing features and polish comes after core functionality is stable.
+
+**Delivers:**
+- `/gsd:sync-upstream` command and workflow
+- Interactive explore mode for commit deep-dive
+- Worktree awareness (check for active worktrees before sync)
+- `/gsd:health` integration for stale sync detection
+- Rollback instructions and recovery documentation
+- `--limit N` and `--since DATE` options for large repos
+
+**From FEATURES:** Interactive explore mode (differentiator), health integration, worktree coordination
+
+**Avoids Pitfalls:** #11 (worktree awareness)
+
+**Research Needed:** Interactive explore mode UX design
 
 ### Phase Ordering Rationale
 
-- **Foundation first:** All other phases depend on lock mechanism and registry working correctly
-- **Integration before reconciliation:** Need working workflows to test reconciliation in context
-- **State reconciliation separate:** Algorithm is straightforward but edge cases (parallel updates to main, merge conflicts) need focused attention
-- **Polish last:** Recovery tools are valuable but not blocking for core functionality
+1. **Infrastructure first:** All other phases depend on configured upstream and safe defaults
+2. **Analysis before merge:** Users must understand changes before committing to merge
+3. **Merge is dangerous:** Most destructive operation gets most preparation
+4. **Integration last:** Workflow orchestration and polish need stable foundation
 
 ### Research Flags
 
-**Phases likely needing deeper research during planning:**
-- **Phase 3 (State Reconciliation):** STATE.md merge algorithm has edge cases — need to enumerate scenarios where main and worktree both have changes. Consider testing with simulated parallel sessions.
+**Phases needing `/gsd:research-phase` during planning:**
+- **Phase 2:** Commit grouping heuristics - how to cluster commits by "feature" when not all follow conventional commits
+- **Phase 3:** STATE.md upstream merge strategy - enumerate scenarios where fork and upstream both changed structure
+- **Phase 4:** Interactive explore mode - UX patterns for commit exploration
 
-**Phases with standard patterns (skip research-phase):**
-- **Phase 1 (Foundation):** Git worktree commands well-documented; directory locks are proven pattern
-- **Phase 2 (Workflow Integration):** Existing workflows already have placeholder logic; integration points are clear
-- **Phase 4 (Polish):** Standard recovery patterns; mainly implementation work
+**Phases with standard patterns (skip research):**
+- **Phase 1:** Git remote/fetch commands are well-documented; config.json extension follows existing pattern
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | Official Git documentation, Git 2.17+ widely available |
-| Features | HIGH | Multiple reference implementations (gwq, worktrunk, gtr) confirm feature landscape |
-| Architecture | HIGH | Follows existing GSD patterns; worktree is wrapper, not core change |
-| Pitfalls | HIGH | Verified with Git docs; well-documented failure modes with clear prevention |
+| Stack | HIGH | All native Git commands, official documentation, no new dependencies |
+| Features | HIGH | Clear table stakes vs differentiators; anti-features explicitly defined |
+| Architecture | HIGH | Follows existing GSD patterns exactly; reference modules exist |
+| Pitfalls | HIGH | Verified with Git docs, GitHub community discussions, GSD codebase analysis |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **Stale lock recovery TTL:** Research suggests 24 hours + no process holding it, but needs validation for GSD's usage patterns. Decide during Phase 1 implementation.
+1. **Commit grouping heuristics:** How to group commits when conventional commit format isn't used? Fallback to primary directory touched, but may need iteration.
 
-- **Partial merge handling:** What if merge has conflicts? Recommendation is stop + present manual resolution + do not auto-cleanup. Needs explicit workflow documentation.
+2. **STATE.md upstream merge:** The existing `state-merge.cjs` has sophisticated section strategies for worktree merges. Need to define what "upstream merge" means for STATE.md - likely fork sections win, but structural migrations need handling.
 
-- **Submodule support:** Git docs note "support for submodules is incomplete" in worktrees. If GSD projects use submodules, add `git submodule update --init --recursive` to post-create hooks.
+3. **Large repo performance:** Research shows pagination needed for 10K+ commits. Defer to Phase 4 `--limit` and `--since` options, but validate during Phase 2 implementation.
 
-- **Disk space monitoring:** Research shows 9.82 GB used in 20-minute session with large codebase. Consider adding disk space check before worktree creation; defer to Phase 4 if not blocking.
+4. **Interactive explore mode UX:** Per PROJECT.md this is a required feature, but specific interaction patterns need design during Phase 4 planning.
 
 ## Sources
 
-### Primary (HIGH confidence)
-- [Git Worktree Official Documentation](https://git-scm.com/docs/git-worktree) — command reference, `--lock` flag, `--porcelain` format
-- [Git Commit 507e6e9](https://github.com/git/git/commit/507e6e9eecce5e7a2cc204c844bbb2f9b17b31e3) — `--lock` option with add
+### Authoritative (HIGH Confidence)
 
-### Secondary (MEDIUM confidence)
-- [gwq](https://github.com/d-kuro/gwq), [worktrunk](https://github.com/max-sixty/worktrunk), [git-worktree-runner](https://github.com/coderabbitai/git-worktree-runner) — reference implementations
-- [How Git Worktrees Changed My AI Agent Workflow](https://nx.dev/blog/git-worktrees-ai-agents) — AI workflow patterns
-- [Git Worktrees: The Complete Guide for 2026](https://devtoolbox.dedyn.io/blog/git-worktrees-complete-guide) — comprehensive guide
-- [Git Worktree: Pros, Cons, and the Gotchas Worth Knowing](https://joshtune.com/posts/git-worktree-pros-cons/) — pitfall documentation
-- [Git worktrees for parallel AI coding agents](https://devcenter.upsun.com/posts/git-worktrees-for-parallel-ai-coding-agents/) — resource isolation patterns
+**Git Documentation:**
+- [git-merge-tree](https://git-scm.com/docs/git-merge-tree) - Conflict detection
+- [git-rev-list](https://git-scm.com/docs/git-rev-list) - Commit range filtering
+- [git-shortlog](https://git-scm.com/docs/git-shortlog) - Commit grouping
+- [git-diff-tree](https://git-scm.com/docs/git-diff-tree) - File changes per commit
+- [git-merge](https://git-scm.com/docs/git-merge) - Merge operations
+- [remembering-renames](https://git-scm.com/docs/remembering-renames) - Rename handling
+- [Advanced Merging](https://git-scm.com/book/en/v2/Git-Tools-Advanced-Merging) - Merge patterns
 
-### Tertiary (context only)
-- GSD codebase analysis: existing execute-phase.md and finalize-phase.md workflows
-- Claude Code documentation: native worktree support via `--worktree` flag
+**GitHub Documentation:**
+- [Syncing a fork](https://docs.github.com/articles/syncing-a-fork) - Standard workflow
+
+**GSD Codebase:**
+- `gsd-tools.cjs` - Command structure, `execGit()` pattern
+- `lib/worktree.cjs` - Module structure pattern
+- `lib/health.cjs` - Complex logic module pattern
+- `state-merge.cjs` - Section merge strategies (NOT for upstream, but reference)
+
+### Community Patterns (MEDIUM Confidence)
+
+- [Atlassian - Git Upstreams and Forks](https://www.atlassian.com/git/tutorials/git-forks-and-upstreams) - Workflow guide
+- [Atlassian - Merging vs Rebasing](https://www.atlassian.com/git/tutorials/merging-vs-rebasing) - Strategy tradeoffs
+- [Happy Git - Get upstream changes](https://happygitwithr.com/upstream-changes) - Fork workflow
+- [Conventional Commits Regex](https://gist.github.com/marcojahn/482410b728c31b221b70ea6d2c433f0c) - Commit parsing
+- [GitHub Discussion #153608](https://github.com/orgs/community/discussions/153608) - Fork sync best practices
+- [GitHub Discussion #46271](https://github.com/orgs/community/discussions/46271) - Undoing sync problems
+- [git rebase: what can go wrong?](https://jvns.ca/blog/2023/11/06/rebasing-what-can-go-wrong-/) - Strategy pitfalls
+- [Resolve Merge Conflicts with Binary Files](https://www.hannaliebl.com/blog/resolve-merge-conflict-with-binary-files/) - Binary handling
 
 ---
-*Research completed: 2026-02-20*
+*Research completed: 2026-02-23*
 *Ready for roadmap: yes*

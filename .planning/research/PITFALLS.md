@@ -1,175 +1,201 @@
-# Domain Pitfalls: Git Worktree for Parallel Phase Execution
+# Domain Pitfalls: Upstream Sync Tooling for GSD Forks
 
-**Domain:** Git worktree management for parallel AI agent workflows
-**Researched:** 2026-02-20
-**Confidence:** HIGH (verified with official Git docs and multiple credible sources)
+**Domain:** Fork management with upstream synchronization
+**Researched:** 2026-02-23
+**Confidence:** HIGH (verified with Git official docs, multiple community sources, and GSD codebase analysis)
+**Context:** Adding upstream sync features to existing GSD fork that already has worktree isolation
 
 ## Critical Pitfalls
 
-Mistakes that cause rewrites, data loss, or broken workflows.
+Mistakes that cause data loss, break the fork, or require significant rework.
 
-### Pitfall 1: Orphaned Worktrees from Manual Deletion
+### Pitfall 1: Sync Destroys Custom Enhancements
 
-**What goes wrong:** Developers delete worktree directories manually with `rm -rf` instead of using `git worktree remove`. Git retains stale metadata pointing to non-existent directories, which accumulates over time and can cause confusing errors.
+**What goes wrong:** User runs sync command and their months of custom GSD modifications disappear. The sync operation treats upstream as authoritative and overwrites local changes.
 
-**Why it happens:** Natural instinct to clean up directories like any other folder. The worktree directory looks like a normal project folder. Users don't realize Git tracks worktree state separately.
+**Why it happens:** Many sync approaches use `git reset --hard upstream/main` which discards all local commits. Users expect "sync" to mean "integrate" not "replace." The GitHub "Sync fork" button performs a merge that can silently lose changes if conflicts aren't handled.
 
 **Consequences:**
-- `git worktree list` shows "prunable" entries with "gitdir file points to non-existent location"
-- Branch may remain locked (cannot be checked out elsewhere)
-- Lock files remain in `.git/worktrees/` directory
-- Disk space not fully reclaimed (Git metadata persists)
+- Custom commands, workflows, and agents gone
+- No obvious way to recover (commits not on remote)
+- User trust in tooling destroyed
+- May need to reconstruct work from memory or backups
 
 **Prevention:**
-- Always use `git worktree remove <path>` for cleanup
-- In GSD: The `finalize-phase` workflow already wraps cleanup correctly with `git worktree remove`
-- Add pre-flight check in `phase-worktree.sh` that runs `git worktree prune` on startup
-- Document in workflow that manual `rm -rf` corrupts state
+- **Never use `reset --hard` by default** - Require explicit `--force` flag with scary warning
+- **Pre-sync backup branch** - Automatically create `backup/pre-sync-{timestamp}` before any destructive operation
+- **Default to merge/rebase** - Use `git merge upstream/main` or `git rebase upstream/main` which preserve local commits
+- **Conflict detection before action** - Check for divergence and warn: "Your fork has 15 commits not in upstream. Continue?"
+- **Show what will change** - Display diff summary before executing sync
 
 **Detection:**
-- `git worktree list` shows entries with "prunable" annotation
-- `git worktree prune --dry-run` shows what would be cleaned
+- `git log --oneline --left-right main...upstream/main` shows `<` commits (local-only)
+- Custom modifications exist in tracked files
+- Fork is "ahead" of upstream in GitHub UI
 
-**Phase to address:** Phase 1 (Core Infrastructure) - Include automatic prune on worktree operations
+**Phase to address:** Phase 1 (Core Sync Infrastructure) - safe defaults with explicit destructive mode
 
 **Sources:**
-- [Git Official Documentation](https://git-scm.com/docs/git-worktree)
-- [Gotcha with git worktree and removing the worktree directory](https://musteresel.github.io/posts/2018/01/git-worktree-gotcha-removed-directory.html)
+- [GitHub Docs - Syncing a fork](https://docs.github.com/articles/syncing-a-fork)
+- [Happy Git - Get upstream changes for a fork](https://happygitwithr.com/upstream-changes)
+- [GitHub Discussion #46271](https://github.com/orgs/community/discussions/46271) - Users losing work from sync
 
 ---
 
-### Pitfall 2: Missing Dependencies in New Worktrees
+### Pitfall 2: Merge Conflicts in Customized Files
 
-**What goes wrong:** When creating a worktree, only tracked files are checked out. Everything in `.gitignore` (node_modules, .env, dist/, venv) does not exist. Agents try to run code with zero dependencies installed.
+**What goes wrong:** Upstream modifies the same files the fork customized. Merge fails with conflicts in 20+ files. User doesn't know how to resolve conflicts in GSD's complex markdown prompts.
 
-**Why it happens:** Worktrees are clean checkouts from Git, not copies of the working directory. Developers expect the new worktree to "just work" like the original.
+**Why it happens:** Common files attract changes from both sides: `README.md`, `commands/gsd/*.md`, `workflows/*.md`, configuration files. Upstream refactors file structure. Fork adds new sections to existing templates.
 
 **Consequences:**
-- Immediate runtime failures when agents try to execute code
-- Build commands fail silently or with cryptic errors
-- Tests cannot run (no test framework installed)
-- Environment variables missing (no .env file)
+- Sync blocked until conflicts resolved
+- User may incorrectly resolve conflicts (losing upstream improvements OR local customizations)
+- Partial resolution leaves inconsistent state
+- May need GSD expertise to resolve semantic conflicts
 
 **Prevention:**
-- **Post-checkout hook:** Create a hook that copies .env files and runs dependency installation
-- **Setup script integration:** GSD's `phase-worktree.sh create` should:
-  1. Create worktree
-  2. Copy .env files from main repo
-  3. Run `npm install` / `pip install` / etc.
-  4. Validate setup before returning success
-- **Configuration for copy patterns:** Allow projects to specify which files to copy (e.g., `.env*`, `.npmrc`, `.tool-versions`)
+- **Pre-merge conflict check** - Run `git merge-tree $(git merge-base HEAD upstream/main) HEAD upstream/main` before attempting merge
+- **Categorize conflicts** - Separate "your customizations vs their changes" from "both added different things"
+- **Conflict preview** - Show which files conflict and what type BEFORE starting merge
+- **Staged resolution** - Handle conflicts one file at a time with clear options
+- **Escape hatch** - Always provide `--abort` to restore clean state
 
 **Detection:**
-- Worktree creation succeeds but subsequent commands fail
-- "MODULE_NOT_FOUND" or "command not found" errors
-- Empty node_modules or missing venv directory
+- `git merge --no-commit --no-ff upstream/main` then check status
+- Files appear in both `git diff HEAD...upstream/main` and `git diff $(git merge-base HEAD upstream/main)...HEAD`
 
-**Phase to address:** Phase 1 (Core Infrastructure) - post-checkout setup with dependency installation
+**Phase to address:** Phase 2 (Conflict Detection) - comprehensive pre-flight checks
 
 **Sources:**
-- [Git Worktree .env Auto-Copy Setup](https://github.com/therohitdas/copy-env)
-- [Using Git Hooks When Creating Worktrees](https://mskelton.dev/bytes/using-git-hooks-when-creating-worktrees)
-- [Git Worktrees with AI Tools](https://envi.codecompose.dev/guides/git-worktrees.html)
+- [Git Advanced Merging](https://git-scm.com/book/en/v2/Git-Tools-Advanced-Merging)
+- [Handling Merge Conflicts in Git](https://www.geeksforgeeks.org/git/merge-conflicts-and-how-to-handle-them/)
 
 ---
 
-### Pitfall 3: Branch Lock Conflicts
+### Pitfall 3: Rename/Delete Conflicts Break Auto-Merge
 
-**What goes wrong:** Git only allows one worktree per branch. Attempting to create another worktree from the same branch fails with "fatal: 'branch-name' is already checked out".
+**What goes wrong:** Upstream renames `workflows/execute.md` to `workflows/execute-phase.md`. Fork modified the original file. Git doesn't know the file moved - sees delete + create, not rename + modify. Auto-merge produces wrong result or fails mysteriously.
 
-**Why it happens:** Git prevents the same branch from being modified in two places simultaneously to avoid corruption. This is a safety feature, not a bug.
+**Why it happens:** Git's rename detection is heuristic-based (content similarity). Heavily modified files may not be detected as renames. Delete/modify conflicts have no obvious "right" resolution. User sees conflict in file that "shouldn't exist anymore."
 
 **Consequences:**
-- Worktree creation fails unexpectedly
-- Workflow scripts may exit with non-zero status
-- Users confused why they can't "work on the same feature"
-- Cannot delete a branch that's checked out in any worktree
+- Fork ends up with both old and new versions
+- Or fork loses changes that were in the "deleted" file
+- Or changes get applied to wrong file
+- Confusing error messages ("CONFLICT (modify/delete)")
 
 **Prevention:**
-- **Unique branch naming:** GSD already uses `gsd/phase-{N}-{slug}` pattern - enforce uniqueness
-- **Check before create:** Before `git worktree add`, run `git worktree list` to verify branch isn't already checked out
-- **Clear error messages:** Detect this specific error and provide actionable guidance ("This branch is already checked out in /path/to/worktree")
-- **Consider detached HEAD for read-only operations:** For verification or review tasks, use `git worktree add --detach`
+- **Detect renames explicitly** - Use `git diff --find-renames --diff-filter=R` to identify upstream renames
+- **Map customizations** - Track which files fork has modified (can compare against base commit)
+- **Warn on path conflicts** - If upstream renamed a file that fork modified, flag for manual review
+- **Interactive rename handling** - "Upstream renamed X to Y. Apply your changes to Y?"
 
 **Detection:**
-- Error message: "fatal: '{branch}' is already checked out at '{path}'"
-- `git worktree list` shows the branch checked out elsewhere
+- `git diff --find-renames upstream/main^..upstream/main --diff-filter=R` shows renames
+- Compare against list of fork-modified files
 
-**Phase to address:** Phase 1 (Core Infrastructure) - branch conflict detection before creation
+**Phase to address:** Phase 2 (Conflict Detection) - special handling for rename/delete cases
 
 **Sources:**
-- [Git Official Documentation](https://git-scm.com/docs/git-worktree)
-- [Git Worktree: Pros, Cons, and the Gotchas Worth Knowing](https://joshtune.com/posts/git-worktree-pros-cons/)
+- [Git - remembering-renames Documentation](https://git-scm.com/docs/remembering-renames)
+- [TIL How to resolve Git rebase conflicts on renamed files](https://til.codeinthehole.com/posts/how-to-resolve-git-conflicts-on-renamed-files/)
 
 ---
 
-### Pitfall 4: Self-Created Merge Conflicts from Parallel Agents
+### Pitfall 4: Partial Sync Leaves Repository Corrupted
 
-**What goes wrong:** Multiple agents working in separate worktrees touch the same files. When branches merge, conflicts are guaranteed. The GitButler team states: "The worktrees are separate, so you can create merge conflicts between them without knowing."
+**What goes wrong:** Merge starts, conflicts occur, user tries to continue but gives up partway. Repository is now in merge state. Other git operations fail. State files may be half-updated.
 
-**Why it happens:** Worktrees provide file-level isolation but no coordination layer. Agents are blind to each other's changes until merge time. Common files (package.json, shared utilities, configuration) attract multiple modifications.
+**Why it happens:** Merge operations are multi-step. User runs `git merge upstream/main`, sees conflicts, resolves some, gets stuck, closes terminal. `.git/MERGE_HEAD` exists. Running other commands gives confusing errors.
 
 **Consequences:**
-- Merge to main fails with conflicts
-- Integration takes longer than the parallel work saved
-- May require human intervention to resolve semantic conflicts
-- Lost productivity from re-work
+- Repository in unusable state until merge completed or aborted
+- `git status` shows ongoing merge
+- Can't switch branches or do other work
+- STATE.md or other GSD files may be partially modified
+- AI agents may write to wrong files or see inconsistent state
 
 **Prevention:**
-- **Task independence at planning time:** Ensure phases planned for parallel execution don't share files (GSD's wave system helps here)
-- **Pre-merge conflict detection:** Before finalize-phase merge, check for conflicts:
-  ```bash
-  git merge-tree $(git merge-base main phase-branch) main phase-branch
-  ```
-- **Frequent integration:** Merge from main frequently within worktrees to reduce drift
-- **File ownership patterns:** Some teams use CODEOWNERS-style rules to flag when multiple agents modify same files
-- **Consider tools like Clash:** [clash-sh/clash](https://github.com/clash-sh/clash) detects potential conflicts across worktrees before merge
+- **Atomic sync operations** - Either complete entirely or abort entirely (rollback pattern)
+- **Pre-sync checkpoint** - Record exact state before sync starts
+- **Merge state detection** - Check for `.git/MERGE_HEAD` before any sync operation
+- **Cleanup command** - Provide `gsd-tools sync --abort` that safely restores pre-sync state
+- **Lock during sync** - Prevent concurrent GSD operations during sync
 
 **Detection:**
-- `git merge --no-commit --no-ff` fails with conflict markers
-- Post-commit hooks that check for files modified in multiple active worktrees
-- Large diff when finally merging (indicates significant drift)
+- `test -f .git/MERGE_HEAD` indicates merge in progress
+- `git status` shows "You have unmerged paths"
+- GSD health check should detect merge-in-progress state
 
-**Phase to address:** Phase 3 (Finalization) - pre-merge conflict detection; Phase 1 should track which files each worktree modifies
+**Phase to address:** Phase 3 (Sync Execution) - atomic operations with rollback
 
 **Sources:**
-- [Codex App Worktrees Explained](https://www.verdent.ai/guides/codex-app-worktrees-explained)
-- [Git worktrees for parallel AI coding agents](https://devcenter.upsun.com/posts/git-worktrees-for-parallel-ai-coding-agents/)
-- [Clash - Manage merge conflicts across git worktrees](https://github.com/clash-sh/clash)
+- [Git - git-merge Documentation](https://git-scm.com/docs/git-merge)
+- Existing GSD `health.cjs` already detects `MERGE_HEAD` (see line 312-324)
 
 ---
 
-### Pitfall 5: Submodule Initialization Failures
+### Pitfall 5: Upstream Force Push Breaks History
 
-**What goes wrong:** Worktrees don't automatically initialize submodules. The directories exist but are empty, causing build failures in projects using submodules.
+**What goes wrong:** Upstream maintainer force-pushes `main` (rewrites history). Fork's tracking becomes inconsistent. Subsequent syncs produce strange results - duplicate commits, conflicts in files that shouldn't conflict, or worse.
 
-**Why it happens:** Git official documentation states: "Multiple checkout in general is still experimental, and the support for submodules is incomplete." Worktrees require explicit submodule initialization.
+**Why it happens:** Force pushes rewrite commit SHAs. Fork's reference to "last synced commit" becomes invalid. `git merge` may re-apply changes or conflict with itself. History diverges unpredictably.
 
 **Consequences:**
-- Empty directories where submodule content should be
-- Build systems fail to find expected files
-- Cannot move worktrees containing submodules with `git worktree move`
-- Each worktree has unique submodule copies (disk space multiplication)
+- `git pull` fails with "refusing to merge unrelated histories"
+- Duplicate commits appear in history
+- Conflicts in files neither side changed recently
+- "Already up to date" but files are clearly different
+- Fork history may become permanently diverged
 
 **Prevention:**
-- **Post-checkout initialization:** After `git worktree add`, always run:
-  ```bash
-  git submodule update --init --recursive
-  ```
-- **Detect submodules in project:** Check for `.gitmodules` before worktree creation; if present, include submodule init in setup
-- **Warn about disk space:** Submodules multiply per worktree (not hardlinked)
-- **Avoid worktree move:** Document that `git worktree move` fails with submodules
+- **Track upstream commit SHA** - Store the upstream commit SHA that fork is based on
+- **Detect force push** - Before sync, check if stored SHA is still an ancestor of `upstream/main`
+- **Force push warning** - "Upstream appears to have rewritten history. This requires special handling."
+- **Rebase-based recovery** - If force push detected, use `git rebase --onto upstream/main <old-sha> main`
+- **Document recovery** - Provide clear instructions for force push scenarios
 
 **Detection:**
-- Empty directories that should contain submodule content
-- Build errors referencing missing files in submodule paths
-- `git submodule status` shows uninitialized submodules (leading `-`)
+- `git merge-base --is-ancestor <stored-sha> upstream/main` returns non-zero if force pushed
+- `git log --oneline upstream/main | head -20` doesn't contain stored SHA
 
-**Phase to address:** Phase 1 (Core Infrastructure) - detect and handle submodules during worktree creation
+**Phase to address:** Phase 1 (Core Sync Infrastructure) - force push detection and handling
 
 **Sources:**
-- [Git Worktrees: From Zero to Hero - Submodules](https://gist.github.com/ashwch/mastering-git-worktree-with-submodules)
-- [Git Official Documentation - Worktree](https://git-scm.com/docs/git-worktree)
+- [Force your forked repo to be the same as upstream](https://gist.github.com/glennblock/1974465)
+- [Syncing a fork - GitHub Docs](https://docs.github.com/articles/syncing-a-fork)
+
+---
+
+### Pitfall 6: STATE.md Merge Conflicts with Worktree Isolation
+
+**What goes wrong:** Fork has worktree isolation (v1.0). Upstream also evolves STATE.md structure. During sync, STATE.md conflicts occur but the existing `state-merge.cjs` doesn't handle upstream as a merge source - it's designed for worktree-to-main merges only.
+
+**Why it happens:** `state-merge.cjs` has section strategies (`SECTION_STRATEGIES`) designed for phase worktree merges. Upstream changes don't fit this model - upstream may add/remove sections, change structure. The three-way merge assumes specific roles for base/main/worktree.
+
+**Consequences:**
+- STATE.md merge fails or produces garbled output
+- Section strategies apply incorrectly (e.g., "worktree-wins" for Session Continuity when there's no worktree)
+- Lost state information from either upstream or fork
+- Merge appears successful but STATE.md is invalid
+
+**Prevention:**
+- **Separate upstream merge strategy** - Don't reuse worktree merge logic for upstream syncs
+- **Structural migration first** - If upstream changed STATE.md structure, migrate fork structure before content merge
+- **Section presence validation** - Verify all expected sections exist after merge
+- **Conservative merge for STATE.md** - Prefer keeping fork's state with option to review upstream changes
+- **Backup fork STATE.md** - Always preserve fork's STATE.md before sync attempt
+
+**Detection:**
+- STATE.md validation fails after sync
+- Missing sections in merged STATE.md
+- `state-merge.cjs` throws unexpected errors during sync
+
+**Phase to address:** Phase 3 (Sync Execution) - upstream-aware state merge strategy
+
+**Sources:**
+- GSD `state-merge.cjs` analysis (see `/Users/mauricevandermerwe/Projects/get-shit-done/get-shit-done/bin/state-merge.cjs`)
 
 ---
 
@@ -177,100 +203,128 @@ Mistakes that cause rewrites, data loss, or broken workflows.
 
 Issues that cause delays or confusion but are recoverable.
 
-### Pitfall 6: Disk Space Explosion
+### Pitfall 7: Upstream Changes Not Visible After Fetch
 
-**What goes wrong:** Disk usage multiplies rapidly with worktrees. Cursor forum users reported 9.82 GB used in a 20-minute session with a ~2GB codebase. Dependencies, build artifacts, and caches multiply per worktree.
+**What goes wrong:** User runs `git fetch upstream` and expects to see changes, but `git diff` shows nothing. Upstream definitely changed. User thinks fetch failed or upstream sync is broken.
 
-**Why it happens:** Each worktree needs its own node_modules, build outputs, and framework caches. Bazel/Pants/Nx monorepos store gigabytes of cache data that multiplies. Old worktrees aren't cleaned up automatically.
+**Why it happens:** `fetch` only updates remote tracking branches (`upstream/main`), not local branches. User needs to run `git merge upstream/main` or `git diff HEAD...upstream/main`. Difference between fetch and merge not understood.
 
 **Prevention:**
-- **Aggressive cleanup:** Remove worktrees immediately after phase finalization (GSD's finalize-phase does this)
-- **Shared caches where possible:** Use npm/yarn/pnpm workspace features, shared Bazel cache
-- **Disk monitoring:** Track `.git/worktrees/` size; alert when > threshold
-- **Maximum active worktrees:** Enforce limit (e.g., 3-5 concurrent worktrees)
-- **Auto-prune on TTL:** Worktrees unused for N days get pruned
+- **Combined operations** - Sync command should fetch + show changes + prompt for merge
+- **Clear status output** - After fetch: "Fetched 5 new commits from upstream. Run 'gsd-tools sync --apply' to merge."
+- **Diff against remote** - Always diff against `upstream/main`, not expecting local changes
 
 **Detection:**
-- Disk space warnings from OS
-- Slow operations due to low disk
-- `du -sh .git/worktrees/` shows unexpectedly large size
+- `git rev-parse upstream/main` differs from `git rev-parse main`
+- User confusion in logs/reports
 
-**Phase to address:** Phase 2 (Parallel Operations) - disk monitoring and limits
+**Phase to address:** Phase 1 (Core Sync Infrastructure) - clear UX for fetch vs merge
 
 ---
 
-### Pitfall 7: Incorrect Path Resolution in Scripts/Hooks
+### Pitfall 8: Binary File Conflicts
 
-**What goes wrong:** Git hooks and scripts that use relative paths or assume specific directory structure fail in worktrees. Worktrees have `.git` as a file (pointing to main repo) not a directory.
+**What goes wrong:** Fork modifies an image, diagram, or other binary file. Upstream also modifies it. Git cannot merge binary files - just shows conflict with no useful diff.
 
-**Why it happens:** In worktrees, `git rev-parse --git-dir` returns `.git/worktrees/<worktree-name>`, not `.git`. Scripts using `cd "$GIT_DIR/.."` end up in `.git/worktrees/` instead of repo root.
+**Why it happens:** Binary files can't be line-merged. Git offers only "ours" or "theirs" choice. For GSD, this might affect: `assets/terminal.svg`, documentation images, or any generated files.
+
+**Consequences:**
+- Conflict resolution requires external tools
+- Easy to accidentally lose one version
+- No visibility into what changed in each version
 
 **Prevention:**
-- **Use `--git-common-dir`:** Always use `git rev-parse --git-common-dir` for main repo paths
-- **Use `--show-toplevel`:** For working tree root, use `git rev-parse --show-toplevel`
-- **Audit existing hooks:** Check all scripts in `.git/hooks/` for path assumptions
-- **Test hooks in worktrees:** Part of QA should be running hooks from worktree context
+- **Detect binary conflicts early** - Flag binary files in conflict preview
+- **Side-by-side preview** - For images, show both versions (if possible)
+- **Clear resolution options** - "Keep fork version" / "Take upstream version" / "Keep both as separate files"
+- **Git LFS consideration** - If project uses LFS, handle accordingly
 
 **Detection:**
-- Hooks fail with "directory not found" errors
-- Scripts write files to wrong locations
-- Pre-commit runs in wrong directory
+- `git diff --binary` shows binary file changes
+- `file <path>` shows file type
 
-**Phase to address:** Phase 1 (Core Infrastructure) - ensure all GSD scripts use correct path resolution
+**Phase to address:** Phase 2 (Conflict Detection) - binary file handling
 
 **Sources:**
-- [Using Git Hooks When Creating Worktrees](https://mskelton.dev/bytes/using-git-hooks-when-creating-worktrees)
-- [Git Official Documentation](https://git-scm.com/docs/git-worktree)
+- [Resolve Merge Conflicts with Binary Files](https://www.hannaliebl.com/blog/resolve-merge-conflict-with-binary-files/)
 
 ---
 
-### Pitfall 8: IDE/Editor Confusion with Multiple Worktrees
+### Pitfall 9: Wrong Branch Synced
 
-**What goes wrong:** Editors, language servers, file watchers, and dev servers behave unexpectedly when multiple instances point at the same shared repo metadata. VS Code only added worktree support in July 2025.
+**What goes wrong:** Fork tracks multiple upstream branches. User runs sync expecting `main` but sync operates on different branch, or syncs the wrong remote entirely (origin vs upstream).
 
-**Why it happens:** IDEs index the entire project and cache metadata. Multiple instances may fight over lock files or show stale state. Language servers may not handle the worktree `.git` file format.
+**Why it happens:** Remote naming conventions vary (`upstream`, `origin`, `parent`). Branch naming varies (`main`, `master`, `develop`). Configuration may point to wrong target. Auto-detection picks wrong default.
 
 **Prevention:**
-- **Separate VS Code workspaces:** Open each worktree as a separate workspace, not just a folder
-- **Check IDE version:** Ensure VS Code >= July 2025 for native worktree support
-- **Avoid JetBrains native UI:** JetBrains products have no worktree creation UI - command line only
-- **Document supported editors:** Explicitly list which editors work well with worktree setup
+- **Explicit remote/branch specification** - `gsd-tools sync upstream/main` not just `gsd-tools sync`
+- **Confirm before sync** - "Sync local 'main' with 'upstream/main'? [y/N]"
+- **Validate remote exists** - Check `git remote -v` includes the target remote
+- **Store sync configuration** - Remember last successful sync target
 
 **Detection:**
-- Language server crashes or provides stale information
-- Git operations in IDE show incorrect branch
-- "File changed on disk" dialogs appearing unexpectedly
+- `git remote -v` shows remote configuration
+- Compare intended target with actual
 
-**Phase to address:** Documentation phase - provide IDE-specific setup guidance
-
-**Sources:**
-- [Git Worktree: Pros, Cons, and the Gotchas Worth Knowing](https://joshtune.com/posts/git-worktree-pros-cons/)
-- [tree-me: Because git worktrees shouldn't be a chore](https://haacked.com/archive/2025/11/21/tree-me/)
+**Phase to address:** Phase 1 (Core Sync Infrastructure) - explicit targeting with confirmation
 
 ---
 
-### Pitfall 9: Shared Database/Resource Conflicts
+### Pitfall 10: Rebase Destroys Merge History
 
-**What goes wrong:** Worktrees isolate code but not runtime environment. Two agents modifying the same local database, Docker daemon, or cache directories create race conditions.
+**What goes wrong:** User chooses rebase strategy for cleaner history. Rebase rewrites all fork commits. If fork was previously merged with upstream (has merge commits), rebase may fail or produce duplicates.
 
-**Why it happens:** Database isolation doesn't exist at the worktree level. Ports, Docker containers, and services are system-level resources. Two agents running tests simultaneously may corrupt shared state.
+**Why it happens:** Rebase replays commits on new base. Merge commits don't rebase cleanly. Previous syncs that used merge now conflict with rebase approach. History becomes tangled.
+
+**Consequences:**
+- "Duplicate" commits in history
+- Conflicts in files that shouldn't conflict
+- Push requires `--force` (dangerous for shared forks)
+- Mixed merge/rebase history is confusing
 
 **Prevention:**
-- **Unique ports per worktree:** Configure each worktree to use different ports (e.g., 3001, 3002, 3003)
-- **Isolated databases:** Use separate database files/containers per worktree, or use in-memory databases for tests
-- **Docker compose profiles:** Each worktree uses a different compose profile with unique container names
-- **Environment variable overrides:** Generate unique `.env` per worktree with port offsets
+- **Consistent strategy** - Pick merge OR rebase and stick with it
+- **Strategy recommendation** - For forks with customizations, merge is safer
+- **Detect prior strategy** - Check for merge commits in fork history
+- **Warn on strategy change** - "Fork has merge commits. Switching to rebase is not recommended."
 
 **Detection:**
-- "Port already in use" errors
-- Database lock errors
-- Intermittent test failures that pass in isolation
-- "Connection refused" to services
+- `git log --merges main` shows merge commits
+- User tries rebase after prior merges
 
-**Phase to address:** Phase 2 (Parallel Operations) - resource isolation strategy
+**Phase to address:** Phase 1 (Core Sync Infrastructure) - strategy detection and guidance
 
 **Sources:**
-- [Git worktrees for parallel AI coding agents](https://devcenter.upsun.com/posts/git-worktrees-for-parallel-ai-coding-agents/)
+- [git rebase: what can go wrong?](https://jvns.ca/blog/2023/11/06/rebasing-what-can-go-wrong-/)
+
+---
+
+### Pitfall 11: Sync During Active Phase Execution
+
+**What goes wrong:** User runs sync while a phase is being executed in a worktree. Sync modifies `main`. Worktree's base becomes stale. Merge at finalize-phase now has unexpected conflicts.
+
+**Why it happens:** Sync and phase execution are independent operations. No coordination between them. User may not realize syncing affects active work. Main branch diverges while worktree branches based on old main.
+
+**Consequences:**
+- `finalize-phase` has more conflicts than expected
+- STATE.md diverges in unexpected ways
+- Work may need to be rebased onto new main
+- Confusion about "what changed"
+
+**Prevention:**
+- **Check active worktrees before sync** - "Phase 3 is active in a worktree. Sync may cause conflicts at finalization. Continue?"
+- **Lock sync during execution** - Optionally prevent sync while phases active
+- **Post-sync worktree update** - Offer to update worktree bases after sync
+- **Document interaction** - Clear guidance on sync timing
+
+**Detection:**
+- GSD registry shows active worktrees
+- `loadRegistry(cwd).worktrees` has entries with status 'active'
+
+**Phase to address:** Phase 4 (Integration) - coordination with worktree isolation
+
+**Sources:**
+- GSD `worktree.cjs` analysis
 
 ---
 
@@ -278,50 +332,46 @@ Issues that cause delays or confusion but are recoverable.
 
 Annoyances that can be worked around.
 
-### Pitfall 10: Stale Lock Files After Crashes
+### Pitfall 12: Upstream Adds New Dependencies
 
-**What goes wrong:** If a process crashes or is killed while holding a worktree lock, the lock file remains. Subsequent operations may fail claiming the worktree is "locked by another process."
+**What goes wrong:** Upstream adds new npm/system dependencies. Fork syncs code but doesn't reinstall. Code runs with missing dependencies until user manually runs `npm install`.
 
 **Prevention:**
-- **Lock file cleanup command:** `git worktree unlock <path>` removes stale locks
-- **Add crash recovery:** GSD's worktree scripts should check for stale locks on startup
-- **Lock with reason:** Use `git worktree lock --reason "message"` for intentional locks to distinguish from stale ones
+- **Detect package.json changes** - After sync, check if dependency files changed
+- **Prompt for reinstall** - "package.json changed. Run npm install? [Y/n]"
+- **Post-sync hooks** - Option to auto-run dependency install
 
 **Detection:**
-- `git worktree list` shows "locked" annotation on worktrees
-- Operations fail with "worktree is locked" errors
+- `git diff HEAD~1 -- package.json package-lock.json` shows changes
 
 ---
 
-### Pitfall 11: Remote Tracking Not Configured
+### Pitfall 13: Changelog Conflicts
 
-**What goes wrong:** Worktrees created from remote branches don't automatically set up upstream tracking. `git pull` and `git push` fail without explicit remote specification.
+**What goes wrong:** Both fork and upstream add entries to CHANGELOG.md. Always conflicts because both append to the same section.
 
 **Prevention:**
-- **Use `-t` flag:** When creating worktree from remote branch, use `git worktree add -t <path> <remote>/<branch>`
-- **Set upstream after creation:** Run `git branch --set-upstream-to=origin/<branch>` after worktree creation
-- **GSD scripts should handle:** Ensure `phase-worktree.sh` sets up tracking correctly
+- **Auto-resolve CHANGELOG** - Sort entries or keep both with deduplication
+- **Separate fork changelog** - Consider FORK-CHANGELOG.md for fork-specific changes
+- **Changelog merge strategy** - Union strategy that combines entries
 
 **Detection:**
-- "There is no tracking information for the current branch" error on push/pull
-- `git status` doesn't show ahead/behind count
+- CHANGELOG.md always conflicts on sync
 
 ---
 
-### Pitfall 12: Forgetting Worktree Location
+### Pitfall 14: Upstream Removes Feature Fork Uses
 
-**What goes wrong:** With multiple worktrees, developers lose track of which directory is which worktree. Changes made in wrong worktree, confusion about branch state.
+**What goes wrong:** Upstream deprecates a feature or command that fork extended or depends on. Sync succeeds but fork functionality breaks.
 
 **Prevention:**
-- **Consistent naming convention:** Use `../{repo}-{feature}` pattern for worktree paths
-- **Use `git worktree list`:** Shows all worktrees with their branches and paths
-- **GSD tracking:** GSD's `phase-worktree.sh status` should show current worktree map
-- **Shell prompt integration:** Include worktree/branch in shell prompt
+- **Breaking change detection** - Compare file deletions against fork's modified files
+- **Warn on removals** - "Upstream removed commands/gsd/old-command.md which fork modified"
+- **Test after sync** - Recommend running fork's tests after sync
 
 **Detection:**
-- Commits appear on wrong branch
-- `pwd` shows unexpected directory
-- Changes don't appear in expected branch
+- `git diff --diff-filter=D upstream/main^..upstream/main` shows deletions
+- Cross-reference with fork modifications
 
 ---
 
@@ -329,38 +379,57 @@ Annoyances that can be worked around.
 
 | Phase Topic | Likely Pitfall | Mitigation |
 |-------------|---------------|------------|
-| Core Infrastructure (Phase 1) | Orphaned worktrees, missing deps, branch conflicts | Build robust creation/cleanup scripts, include dependency setup |
-| Parallel Operations (Phase 2) | Disk space explosion, resource conflicts | Add monitoring, enforce limits, isolate resources |
-| Finalization (Phase 3) | Merge conflicts, incomplete cleanup | Pre-merge conflict detection, verify cleanup completed |
-| Integration with execute-phase | Path resolution in scripts | Use `--show-toplevel` and `--git-common-dir` |
-| Integration with finalize-phase | Cleanup after merge failure | Handle partial states, manual recovery instructions |
+| Core Sync Infrastructure | Destroying custom enhancements, force push handling | Safe defaults, backup branches, force push detection |
+| Conflict Detection | Rename/delete confusion, binary files | Pre-flight checks, rename tracking, binary handling |
+| Sync Execution | Partial sync corruption, STATE.md merge issues | Atomic operations, rollback, separate state strategies |
+| Integration with Worktrees | Sync during active phase | Worktree awareness, coordination, timing guidance |
+| Deep Dive Mode | User gets lost in change exploration | Clear navigation, escape hatches, scope limits |
 
-## GSD-Specific Considerations
+## GSD-Specific Integration Considerations
 
 Based on the existing GSD codebase:
 
-1. **`execute-phase.md` already references `phase-worktree.sh`:** The workflow expects this script to exist in `.planning/scripts/`. Ensure the script handles all pitfalls above.
+1. **Worktree isolation interaction:** The existing worktree system assumes `main` is stable during phase execution. Upstream sync can change main, affecting all worktrees' merge base. Consider:
+   - Block sync while worktrees active, OR
+   - Auto-rebase worktree branches after sync, OR
+   - Warn and let user decide
 
-2. **`finalize-phase.md` handles cleanup correctly:** Uses `git worktree remove` not manual deletion. Verify the error handling for partial failures.
+2. **STATE.md is special:** The `state-merge.cjs` has sophisticated section-based merge logic designed for worktree-to-main merges. This logic doesn't apply to upstream syncs. Need separate strategy:
+   - Fork's state sections should generally win (local context)
+   - Structural changes from upstream may need migration
+   - Don't reuse worktree merge code
 
-3. **No rollback mechanism (from CONCERNS.md):** If phase execution fails partway, worktree may be left in inconsistent state. Consider git-based checkpoints before risky operations.
+3. **Health system should detect sync issues:** Extend `health.cjs` to detect:
+   - Stale upstream tracking
+   - Diverged history needing attention
+   - Failed sync attempts (backup branches exist)
 
-4. **Path hardcoding (from CONCERNS.md):** Worktree scripts must not assume `~/.claude/` paths work the same in worktrees. Use dynamic path resolution.
+4. **Registry considerations:** The worktree registry tracks phases. Consider adding:
+   - Last sync timestamp
+   - Upstream commit SHA synced from
+   - Pending upstream changes count
 
-5. **State.md field updates fragile (from CONCERNS.md):** Ensure STATE.md updates work correctly from worktree context, not just main repo.
+5. **Command naming:** Follow existing GSD patterns:
+   - `gsd-tools sync fetch` - fetch upstream changes
+   - `gsd-tools sync status` - show divergence
+   - `gsd-tools sync apply` - merge changes
+   - `gsd-tools sync abort` - rollback failed sync
 
 ## Sources
 
-- [Git Official Documentation - git-worktree](https://git-scm.com/docs/git-worktree) - HIGH confidence
-- [Git Worktree: Pros, Cons, and the Gotchas Worth Knowing](https://joshtune.com/posts/git-worktree-pros-cons/) - MEDIUM confidence
-- [Git worktrees for parallel AI coding agents](https://devcenter.upsun.com/posts/git-worktrees-for-parallel-ai-coding-agents/) - MEDIUM confidence
-- [Using Git Worktrees for Parallel AI Development](https://stevekinney.com/courses/ai-development/git-worktrees) - MEDIUM confidence
-- [Clash - Manage merge conflicts across git worktrees](https://github.com/clash-sh/clash) - MEDIUM confidence
-- [Git Worktree .env Auto-Copy Setup](https://github.com/therohitdas/copy-env) - MEDIUM confidence
-- [Using Git Hooks When Creating Worktrees](https://mskelton.dev/bytes/using-git-hooks-when-creating-worktrees) - MEDIUM confidence
-- [Git Worktrees: The Complete Guide for 2026](https://devtoolbox.dedyn.io/blog/git-worktrees-complete-guide) - MEDIUM confidence
-- [Codex App Worktrees Explained](https://www.verdent.ai/guides/codex-app-worktrees-explained) - MEDIUM confidence
+- [GitHub Docs - Syncing a fork](https://docs.github.com/articles/syncing-a-fork) - HIGH confidence
+- [Happy Git - Get upstream changes for a fork](https://happygitwithr.com/upstream-changes) - HIGH confidence
+- [Git - Advanced Merging](https://git-scm.com/book/en/v2/Git-Tools-Advanced-Merging) - HIGH confidence
+- [Git - git-merge Documentation](https://git-scm.com/docs/git-merge) - HIGH confidence
+- [Git - remembering-renames Documentation](https://git-scm.com/docs/remembering-renames) - HIGH confidence
+- [Git - Rerere](https://git-scm.com/book/en/v2/Git-Tools-Rerere) - MEDIUM confidence
+- [Atlassian Git Tutorial - Merge Strategies](https://www.atlassian.com/git/tutorials/using-branches/merge-strategy) - MEDIUM confidence
+- [Resolve Merge Conflicts with Binary Files](https://www.hannaliebl.com/blog/resolve-merge-conflict-with-binary-files/) - MEDIUM confidence
+- [GitHub Discussion #22440](https://github.com/orgs/community/discussions/22440) - Sync leaving commits ahead - MEDIUM confidence
+- [GitHub Discussion #46271](https://github.com/orgs/community/discussions/46271) - Undoing sync - MEDIUM confidence
+- [git rebase: what can go wrong?](https://jvns.ca/blog/2023/11/06/rebasing-what-can-go-wrong-/) - MEDIUM confidence
+- GSD codebase analysis: `state-merge.cjs`, `worktree.cjs`, `health.cjs` - HIGH confidence
 
 ---
 
-*Pitfalls audit: 2026-02-20*
+*Pitfalls audit: 2026-02-23 | Focus: Upstream sync for existing GSD fork with worktree isolation*
