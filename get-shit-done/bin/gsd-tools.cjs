@@ -4148,6 +4148,13 @@ function cmdWorktreeAdd(cwd, phase, worktreePath, options, raw) {
   registry.worktrees[key] = entry;
   saveRegistry(cwd, registry);
 
+  // Auto-check for health issues after successful add
+  const healthResult = runQuickHealthCheck(cwd);
+  if (healthResult.issues.length > 0) {
+    process.stderr.write(`\nWarning: ${healthResult.issues.length} worktree health issue(s) detected.\n`);
+    process.stderr.write(`Run 'gsd-tools health check' for details.\n`);
+  }
+
   output({
     added: true,
     key,
@@ -4175,6 +4182,13 @@ function cmdWorktreeRemove(cwd, phase, raw) {
   registry.worktrees[key].status = 'removed';
   registry.worktrees[key].removed = new Date().toISOString();
   saveRegistry(cwd, registry);
+
+  // Auto-check for health issues after successful remove
+  const healthResult = runQuickHealthCheck(cwd);
+  if (healthResult.issues.length > 0) {
+    process.stderr.write(`\nWarning: ${healthResult.issues.length} worktree health issue(s) detected.\n`);
+    process.stderr.write(`Run 'gsd-tools health check' for details.\n`);
+  }
 
   output({
     removed: true,
@@ -4213,6 +4227,13 @@ function cmdWorktreeList(cwd, raw) {
     key,
     ...value,
   }));
+
+  // Auto-check for health issues after listing
+  const healthResult = runQuickHealthCheck(cwd);
+  if (healthResult.issues.length > 0) {
+    process.stderr.write(`\nWarning: ${healthResult.issues.length} worktree health issue(s) detected.\n`);
+    process.stderr.write(`Run 'gsd-tools health check' for details.\n`);
+  }
 
   output(worktrees, raw, JSON.stringify(worktrees));
 }
