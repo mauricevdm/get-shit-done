@@ -4476,6 +4476,347 @@ function cmdLockStale(cwd, phase, raw) {
   }, raw);
 }
 
+// ─── Health Check Infrastructure ───────────────────────────────────────────────
+
+// Exit codes per CONTEXT.md decision
+const HEALTH_EXIT_CODES = {
+  HEALTHY: 0,
+  ORPHANS_ONLY: 1,
+  INCOMPLETE_ONLY: 2,
+  ORPHANS_AND_INCOMPLETE: 3,
+  RUNTIME_ERROR: 4,
+};
+
+/**
+ * Lightweight health check for auto-warnings during worktree operations.
+ * Only checks registry vs filesystem (no age threshold check).
+ */
+function runQuickHealthCheck(cwd) {
+  const registry = loadRegistry(cwd);
+  if (!registry) {
+    return { issues: [], hasOrphans: false };
+  }
+
+  const issues = [];
+
+  // Check registry entries against filesystem
+  for (const [key, entry] of Object.entries(registry.worktrees)) {
+    if (entry.status === 'removed') continue;
+
+    const pathExists = fs.existsSync(entry.path);
+    if (!pathExists) {
+      issues.push({
+        type: 'path_missing',
+        phase: entry.phase_number,
+        path: entry.path,
+        branch: entry.branch,
+        suggested_action: 'Remove orphaned registry entry',
+        repairable: true,
+      });
+    }
+  }
+
+  // Check for stale locks with dead PIDs
+  for (const [key, lock] of Object.entries(registry.locks || {})) {
+    let pidAlive = false;
+    try {
+      process.kill(lock.pid, 0);
+      pidAlive = true;
+    } catch {
+      pidAlive = false;
+    }
+
+    // Only flag as stale if same hostname (cross-machine locks need manual intervention)
+    if (!pidAlive && lock.hostname === os.hostname()) {
+      issues.push({
+        type: 'stale_lock',
+        phase: key.replace('phase-', ''),
+        path: null,
+        branch: null,
+        suggested_action: 'Release stale lock',
+        repairable: true,
+        metadata: { pid: lock.pid, hostname: lock.hostname },
+      });
+    }
+  }
+
+  return {
+    issues,
+    hasOrphans: issues.length > 0,
+  };
+}
+
+/**
+ * Full health check combining orphan detection, stale locks, and incomplete finalization.
+ * Used by `gsd-tools health check` command.
+ */
+function cmdHealthCheck(cwd, options, raw) {
+  const registry = loadRegistry(cwd);
+  const issues = [];
+  const ageThreshold = options.ageThreshold || 7; // Default 7 days
+
+  // ─── 1. Orphan detection (RECV-01) ───────────────────────────────────────────
+
+  if (registry) {
+    // Get git worktree list for comparison
+    let gitWorktrees = [];
+    try {
+      const gitOutput = execSync('git worktree list --porcelain', {
+        cwd,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      const blocks = gitOutput.trim().split('\n\n').filter(Boolean);
+      for (const block of blocks) {
+        const lines = block.split('\n');
+        const wt = {};
+        for (const line of lines) {
+          if (line.startsWith('worktree ')) {
+            wt.path = line.slice(9);
+          } else if (line.startsWith('branch ')) {
+            wt.branch = line.slice(7);
+          } else if (line === 'bare') {
+            wt.bare = true;
+          }
+        }
+        if (wt.path) {
+          gitWorktrees.push(wt);
+        }
+      }
+    } catch {
+      gitWorktrees = [];
+    }
+
+    // Check registry entries against filesystem and git
+    for (const [key, entry] of Object.entries(registry.worktrees)) {
+      if (entry.status === 'removed') continue;
+
+      const pathExists = fs.existsSync(entry.path);
+      const inGit = gitWorktrees.some(gw => gw.path === entry.path);
+
+      if (!pathExists) {
+        issues.push({
+          type: 'path_missing',
+          phase: entry.phase_number,
+          path: entry.path,
+          branch: entry.branch,
+          age_days: null,
+          suggested_action: 'Remove orphaned registry entry',
+          repairable: true,
+          metadata: { registry_key: key },
+        });
+      } else if (!inGit) {
+        issues.push({
+          type: 'not_in_git',
+          phase: entry.phase_number,
+          path: entry.path,
+          branch: entry.branch,
+          age_days: null,
+          suggested_action: 'Re-register with git worktree or clean up',
+          repairable: true,
+          metadata: { registry_key: key },
+        });
+      }
+
+      // Check age threshold for active worktrees
+      if (entry.created && entry.status === 'active') {
+        const createdTime = new Date(entry.created).getTime();
+        const now = Date.now();
+        const ageDays = (now - createdTime) / (1000 * 60 * 60 * 24);
+        if (ageDays > ageThreshold) {
+          issues.push({
+            type: 'age_exceeded',
+            phase: entry.phase_number,
+            path: entry.path,
+            branch: entry.branch,
+            age_days: Math.round(ageDays * 10) / 10,
+            suggested_action: `Finalize or remove worktree (inactive ${Math.round(ageDays)} days)`,
+            repairable: true,
+            metadata: { created: entry.created, threshold_days: ageThreshold },
+          });
+        }
+      }
+    }
+
+    // Check git worktrees not in registry (excluding main worktree)
+    for (const gw of gitWorktrees) {
+      if (gw.bare) continue;
+
+      const inRegistry = Object.values(registry.worktrees).some(
+        entry => entry.path === gw.path && entry.status === 'active'
+      );
+
+      // Skip the main worktree (it won't be in registry)
+      const isMainWorktree = gw.path === cwd || gw.path === path.resolve(cwd);
+
+      if (!inRegistry && !isMainWorktree) {
+        issues.push({
+          type: 'not_in_registry',
+          phase: null,
+          path: gw.path,
+          branch: gw.branch,
+          age_days: null,
+          suggested_action: 'Add to registry or remove untracked worktree',
+          repairable: true,
+          metadata: { git_branch: gw.branch },
+        });
+      }
+    }
+
+    // ─── 2. Stale lock detection (RECV-02) ────────────────────────────────────────
+
+    for (const [key, lock] of Object.entries(registry.locks || {})) {
+      let pidAlive = false;
+      try {
+        process.kill(lock.pid, 0);
+        pidAlive = true;
+      } catch {
+        pidAlive = false;
+      }
+
+      const isRemoteHost = lock.hostname !== os.hostname();
+
+      if (!pidAlive) {
+        issues.push({
+          type: 'stale_lock',
+          phase: key.replace('phase-', ''),
+          path: null,
+          branch: null,
+          age_days: null,
+          suggested_action: isRemoteHost
+            ? `Stale lock from different host (${lock.hostname}). Verify process is dead before clearing.`
+            : 'Release stale lock',
+          repairable: !isRemoteHost, // Only auto-repairable if same host
+          metadata: {
+            pid: lock.pid,
+            hostname: lock.hostname,
+            acquired: lock.acquired,
+            remote_host_warning: isRemoteHost,
+          },
+        });
+      }
+    }
+  }
+
+  // ─── 3. Incomplete finalization detection (RECV-03) ─────────────────────────
+
+  const finalizationDir = path.join(cwd, '.planning', 'worktrees', 'finalization');
+  if (fs.existsSync(finalizationDir)) {
+    try {
+      const markerFiles = fs.readdirSync(finalizationDir)
+        .filter(f => f.startsWith('phase-') && f.endsWith('.json'));
+
+      for (const markerFile of markerFiles) {
+        const markerPath = path.join(finalizationDir, markerFile);
+        try {
+          const markerContent = JSON.parse(fs.readFileSync(markerPath, 'utf-8'));
+          const completedSteps = Object.entries(markerContent.steps || {})
+            .filter(([, status]) => status === true || status === 'complete')
+            .map(([step]) => step);
+          const pendingSteps = Object.entries(markerContent.steps || {})
+            .filter(([, status]) => status === 'pending' || status === false)
+            .map(([step]) => step);
+
+          issues.push({
+            type: 'incomplete_finalization',
+            phase: markerContent.phase,
+            path: markerContent.worktree_path,
+            branch: markerContent.branch,
+            age_days: null,
+            suggested_action: `Resume finalization from step: ${pendingSteps[0] || 'cleanup'}`,
+            repairable: true,
+            metadata: {
+              started: markerContent.started,
+              completed_steps: completedSteps,
+              pending_steps: pendingSteps,
+              marker_file: markerFile,
+            },
+          });
+        } catch {
+          // Malformed marker file
+          issues.push({
+            type: 'incomplete_finalization',
+            phase: markerFile.replace('phase-', '').replace('.json', ''),
+            path: null,
+            branch: null,
+            age_days: null,
+            suggested_action: 'Investigate malformed finalization marker',
+            repairable: false,
+            metadata: { marker_file: markerFile, parse_error: true },
+          });
+        }
+      }
+    } catch {
+      // Directory read error, ignore
+    }
+  }
+
+  // Check for merge-in-progress (git state)
+  const gitDir = path.join(cwd, '.git');
+  // Handle both regular repos and worktrees (where .git is a file pointing to main repo)
+  let actualGitDir = gitDir;
+  if (fs.existsSync(gitDir)) {
+    const gitStat = fs.statSync(gitDir);
+    if (gitStat.isFile()) {
+      // It's a worktree, read the pointer
+      const gitContent = fs.readFileSync(gitDir, 'utf-8').trim();
+      const match = gitContent.match(/^gitdir:\s*(.+)$/);
+      if (match) {
+        actualGitDir = path.resolve(cwd, match[1]);
+      }
+    }
+  }
+
+  const mergeHeadPath = path.join(actualGitDir, 'MERGE_HEAD');
+  if (fs.existsSync(mergeHeadPath)) {
+    issues.push({
+      type: 'merge_in_progress',
+      phase: null,
+      path: cwd,
+      branch: null,
+      age_days: null,
+      suggested_action: 'Complete or abort merge: git merge --continue or git merge --abort',
+      repairable: false, // Requires human decision
+      metadata: { merge_head_file: mergeHeadPath },
+    });
+  }
+
+  // ─── 4. Compute exit code and status ────────────────────────────────────────
+
+  const orphanTypes = ['path_missing', 'not_in_git', 'not_in_registry', 'stale_lock', 'age_exceeded'];
+  const incompleteTypes = ['incomplete_finalization', 'merge_in_progress'];
+
+  const hasOrphans = issues.some(i => orphanTypes.includes(i.type));
+  const hasIncomplete = issues.some(i => incompleteTypes.includes(i.type));
+
+  let exitCode;
+  if (!hasOrphans && !hasIncomplete) {
+    exitCode = HEALTH_EXIT_CODES.HEALTHY;
+  } else if (hasOrphans && !hasIncomplete) {
+    exitCode = HEALTH_EXIT_CODES.ORPHANS_ONLY;
+  } else if (!hasOrphans && hasIncomplete) {
+    exitCode = HEALTH_EXIT_CODES.INCOMPLETE_ONLY;
+  } else {
+    exitCode = HEALTH_EXIT_CODES.ORPHANS_AND_INCOMPLETE;
+  }
+
+  const status = issues.length === 0 ? 'healthy' : (issues.some(i => !i.repairable) ? 'broken' : 'degraded');
+
+  const result = {
+    status,
+    issues,
+    exit_code: exitCode,
+    summary: {
+      orphan_count: issues.filter(i => ['path_missing', 'not_in_git', 'not_in_registry', 'age_exceeded'].includes(i.type)).length,
+      stale_lock_count: issues.filter(i => i.type === 'stale_lock').length,
+      incomplete_count: issues.filter(i => incompleteTypes.includes(i.type)).length,
+    },
+  };
+
+  output(result, raw);
+}
+
 // ─── Compound Commands ────────────────────────────────────────────────────────
 
 function resolveModelInternal(cwd, agentType) {
@@ -5471,6 +5812,18 @@ async function main() {
         cmdLockStale(cwd, args[2], raw);
       } else {
         error('Unknown lock subcommand. Available: record, clear, check, list, stale');
+      }
+      break;
+    }
+
+    case 'health': {
+      const subcommand = args[1];
+      if (subcommand === 'check') {
+        const ageThresholdIdx = args.indexOf('--age-threshold');
+        const ageThreshold = ageThresholdIdx !== -1 ? parseInt(args[ageThresholdIdx + 1], 10) : 7;
+        cmdHealthCheck(cwd, { ageThreshold }, raw);
+      } else {
+        error('Unknown health subcommand. Available: check');
       }
       break;
     }
