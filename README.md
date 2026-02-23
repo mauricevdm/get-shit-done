@@ -506,7 +506,8 @@ You're never locked in. The system adapts.
 | `/gsd:check-todos` | List pending todos |
 | `/gsd:debug [desc]` | Systematic debugging with persistent state |
 | `/gsd:quick [--full]` | Execute ad-hoc task with GSD guarantees (`--full` adds plan-checking and verification) |
-| `/gsd:health [--repair]` | Validate `.planning/` directory integrity, auto-repair with `--repair` |
+| `/gsd:health [--quiet\|--ci]` | Diagnose and fix worktree health issues (orphans, stale locks, incomplete finalization) |
+| `/gsd:finalize-phase <N>` | Merge phase branch to main and cleanup worktree |
 
 <sup>¹ Contributed by reddit user OracleGreyBeard</sup>
 
@@ -650,6 +651,49 @@ npx get-shit-done-cc --opencode --local --uninstall
 ```
 
 This removes all GSD commands, agents, hooks, and settings while preserving your other configurations.
+
+---
+
+## GSD Enhancements
+
+### Worktree Isolation (v1.x)
+
+**Parallel phase execution through git worktree isolation** — multiple AI sessions can work on different phases simultaneously without file conflicts.
+
+| Feature | Description |
+|---------|-------------|
+| **Phase Worktrees** | Each phase gets its own isolated worktree with a dedicated branch |
+| **Automatic Lock Management** | Prevents concurrent execution of the same phase across sessions |
+| **State Reconciliation** | STATE.md merges correctly when finalizing (phase-specific changes preserved) |
+| **Health Monitoring** | `/gsd:health` detects orphaned worktrees, stale locks, incomplete finalization |
+| **Interactive Repair** | Doctor-pattern diagnosis with one-at-a-time fix confirmation |
+| **CI/Automation Support** | `--quiet`/`--ci` mode returns exit codes without prompts |
+
+**New Commands:**
+
+| Command | What it does |
+|---------|--------------|
+| `/gsd:health` | Diagnose and fix worktree health issues interactively |
+| `/gsd:finalize-phase <N>` | Merge phase branch to main, cleanup worktree |
+
+**Configuration:**
+
+Enable worktree isolation in `.planning/config.json`:
+
+```json
+{
+  "git": {
+    "branching_strategy": "phase"
+  }
+}
+```
+
+**Exit Codes** (for CI integration):
+- `0` — Healthy (no issues)
+- `1` — Orphaned worktrees found
+- `2` — Incomplete finalization found
+- `3` — Both orphans and incomplete
+- `4+` — Runtime errors
 
 ---
 
