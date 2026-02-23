@@ -8,6 +8,7 @@ A detailed reference for workflows, troubleshooting, and configuration. For quic
 
 - [Workflow Diagrams](#workflow-diagrams)
 - [Command Reference](#command-reference)
+  - [GSD Enhancements](#gsd-enhancements)
 - [Configuration Reference](#configuration-reference)
 - [Usage Examples](#usage-examples)
 - [Troubleshooting](#troubleshooting)
@@ -185,6 +186,31 @@ A detailed reference for workflows, troubleshooting, and configuration. For quic
 | `/gsd:settings` | Configure workflow toggles and model profile | Change model, toggle agents |
 | `/gsd:set-profile <profile>` | Quick profile switch | Change cost/quality tradeoff |
 | `/gsd:reapply-patches` | Restore local modifications after update | After `/gsd:update` if you had local edits |
+
+### GSD Enhancements
+
+| Command | Purpose | When to Use |
+|---------|---------|-------------|
+| `/gsd:health` | Diagnose and fix worktree health issues | Orphaned worktrees, stale locks, incomplete finalization |
+| `/gsd:finalize-phase <N>` | Merge phase branch to main, cleanup worktree | After phase verification with worktree isolation enabled |
+
+**Worktree Isolation Features:**
+
+| Feature | Description |
+|---------|-------------|
+| Phase Worktrees | Each phase gets its own isolated worktree with a dedicated branch |
+| Lock Management | Prevents concurrent execution of the same phase across sessions |
+| State Reconciliation | STATE.md merges correctly when finalizing (phase-specific changes preserved) |
+| Health Monitoring | Detects orphaned worktrees, stale locks, incomplete finalization |
+| Interactive Repair | Doctor-pattern diagnosis with one-at-a-time fix confirmation |
+| CI Mode | `--quiet`/`--ci` returns exit codes without interactive prompts |
+
+**Exit Codes** (for `/gsd:health --ci`):
+- `0` — Healthy
+- `1` — Orphaned worktrees found
+- `2` — Incomplete finalization found
+- `3` — Both types found
+- `4+` — Runtime errors
 
 ---
 
