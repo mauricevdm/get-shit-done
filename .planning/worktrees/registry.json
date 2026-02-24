@@ -27,7 +27,31 @@
       "created": "2026-02-24T10:20:50.055Z",
       "status": "removed",
       "removed": "2026-02-24T10:59:48.285Z"
+    },
+    "phase-06.1": {
+      "phase_number": "06.1",
+      "phase_name": "local-modifications",
+      "branch": "phase-06.1-local-modifications",
+      "path": "/Users/mauricevandermerwe/Projects/get-shit-done/.worktrees/get-shit-done-phase-06.1",
+      "created": "2026-02-24T15:03:59.744Z",
+      "status": "removed",
+      "removed": "2026-02-24T15:38:01.710Z"
+    },
+    "phase-07": {
+      "phase_number": "07",
+      "phase_name": "merge-operations",
+      "branch": "phase-07-merge-operations",
+      "path": "/Users/mauricevandermerwe/Projects/get-shit-done/.worktrees/get-shit-done-phase-07",
+      "created": "2026-02-24T15:17:42.472Z",
+      "status": "active"
     }
   },
-  "locks": {}
+  "locks": {
+    "phase-07": {
+      "acquired": "2026-02-24T15:17:42.323Z",
+      "owner": "mauricevandermerwe",
+      "pid": 52762,
+      "hostname": "Maurices-MacBook-Pro.local"
+    }
+  }
 }
