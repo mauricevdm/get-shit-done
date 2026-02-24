@@ -1058,6 +1058,140 @@ function formatBinaryChanges(binaries) {
   return text.trim();
 }
 
+// ─── Structural Conflict Detection ────────────────────────────────────────────
+
+/**
+ * Get fork's modifications to a specific file.
+ * Returns line change summary for display in conflict output.
+ * @param {string} cwd - Working directory
+ * @param {string} file - File path to check
+ * @returns {{ added_lines: number, removed_lines: number }}
+ */
+function getForkModifications(cwd, file) {
+  const result = execGit(cwd, ['diff', '--stat', `${DEFAULT_REMOTE_NAME}/${DEFAULT_BRANCH}..HEAD`, '--', file]);
+  if (!result.success || !result.stdout) {
+    return { added_lines: 0, removed_lines: 0 };
+  }
+
+  // Parse stat output: "file.cjs | 15 +++ --"
+  // Or summary line: " 1 file changed, 12 insertions(+), 3 deletions(-)"
+  const lines = result.stdout.split('\n');
+  const summaryLine = lines[lines.length - 1];
+
+  let added = 0;
+  let removed = 0;
+
+  const insertMatch = summaryLine.match(/(\d+)\s+insertions?\(\+\)/);
+  const deleteMatch = summaryLine.match(/(\d+)\s+deletions?\(-\)/);
+
+  if (insertMatch) added = parseInt(insertMatch[1], 10);
+  if (deleteMatch) removed = parseInt(deleteMatch[1], 10);
+
+  return { added_lines: added, removed_lines: removed };
+}
+
+/**
+ * Detect file renames in upstream changes.
+ * Uses -M90 threshold (90% similarity) per RESEARCH patterns.
+ * @param {string} cwd - Working directory
+ * @returns {Array<{ type: 'rename', similarity: number, from: string, to: string, fork_modified: boolean, modifications?: object }>}
+ */
+function detectRenames(cwd) {
+  // Run: git diff -M90 --diff-filter=R --name-status HEAD..upstream/main
+  const result = execGit(cwd, ['diff', '-M90', '--diff-filter=R', '--name-status', `HEAD..${DEFAULT_REMOTE_NAME}/${DEFAULT_BRANCH}`]);
+
+  const renames = [];
+  if (!result.success || !result.stdout) {
+    return renames;
+  }
+
+  for (const line of result.stdout.split('\n').filter(Boolean)) {
+    // Format: R090\told-path\tnew-path (tab-separated)
+    const match = line.match(/^R(\d+)\t(.+)\t(.+)$/);
+    if (match) {
+      const from = match[2];
+      const similarity = parseInt(match[1], 10);
+
+      // Check if fork modified the source file
+      const forkModResult = execGit(cwd, ['diff', '--name-only', `${DEFAULT_REMOTE_NAME}/${DEFAULT_BRANCH}..HEAD`, '--', from]);
+      const forkModified = forkModResult.success && forkModResult.stdout.trim() !== '';
+
+      const rename = {
+        type: 'rename',
+        similarity,
+        from,
+        to: match[3],
+        fork_modified: forkModified,
+      };
+
+      // Get modification details if fork modified the file
+      if (forkModified) {
+        rename.modifications = getForkModifications(cwd, from);
+      }
+
+      renames.push(rename);
+    }
+  }
+
+  return renames;
+}
+
+/**
+ * Detect delete conflicts in upstream changes.
+ * Only returns files where the fork has modifications (these are the conflicts).
+ * @param {string} cwd - Working directory
+ * @returns {Array<{ type: 'delete', file: string, fork_modified: true, modifications: object }>}
+ */
+function detectDeleteConflicts(cwd) {
+  // Run: git diff --diff-filter=D --name-only HEAD..upstream/main
+  const result = execGit(cwd, ['diff', '--diff-filter=D', '--name-only', `HEAD..${DEFAULT_REMOTE_NAME}/${DEFAULT_BRANCH}`]);
+
+  const deletes = [];
+  if (!result.success || !result.stdout) {
+    return deletes;
+  }
+
+  for (const file of result.stdout.split('\n').filter(Boolean)) {
+    // Check if fork modified this file
+    const forkModResult = execGit(cwd, ['diff', '--name-only', `${DEFAULT_REMOTE_NAME}/${DEFAULT_BRANCH}..HEAD`, '--', file]);
+
+    if (forkModResult.success && forkModResult.stdout.trim() !== '') {
+      // Fork has modifications - this is a conflict
+      const modifications = getForkModifications(cwd, file);
+      deletes.push({
+        type: 'delete',
+        file,
+        fork_modified: true,
+        modifications,
+      });
+    }
+  }
+
+  return deletes;
+}
+
+/**
+ * Detect all structural conflicts (renames + deletes) between HEAD and upstream.
+ * Returns combined results with conflict indicators.
+ * @param {string} cwd - Working directory
+ * @returns {{ renames: Array, deletes: Array, total: number, has_conflicts: boolean }}
+ */
+function detectStructuralConflicts(cwd) {
+  const renames = detectRenames(cwd);
+  const deletes = detectDeleteConflicts(cwd);
+
+  // Count conflicts: renames where fork modified + all deletes (already filtered)
+  const renameConflicts = renames.filter(r => r.fork_modified);
+  const total = renameConflicts.length + deletes.length;
+
+  return {
+    renames,
+    deletes,
+    total,
+    has_conflicts: total > 0,
+  };
+}
+
 // ─── Notification Functions ───────────────────────────────────────────────────
 
 /**
@@ -1212,6 +1346,9 @@ module.exports = {
   // Binary detection functions
   detectBinaryChanges,
   formatBinaryChanges,
+
+  // Structural conflict detection
+  detectStructuralConflicts,
 
   // Commands
   cmdUpstreamConfigure,
