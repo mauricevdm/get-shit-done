@@ -882,6 +882,193 @@ function cmdUpstreamLog(cwd, options, output, error, raw) {
   }
 }
 
+// ─── Analyze Command ──────────────────────────────────────────────────────────
+
+/**
+ * Format directory groups for human-readable output.
+ * @param {Map<string, Set<object>>} groups - Directory to commits map
+ * @returns {string}
+ */
+function formatDirectoryGroups(groups) {
+  const folderEmoji = '\uD83D\uDCC1'; // folder emoji
+  let text = '';
+
+  for (const [dir, commitSet] of groups) {
+    const commits = Array.from(commitSet);
+    text += `${folderEmoji} ${dir} (${commits.length} commit${commits.length === 1 ? '' : 's'})\n`;
+    for (const commit of commits) {
+      text += `  ${commit.hash} ${truncateSubject(commit.subject)}\n`;
+    }
+    text += '\n';
+  }
+
+  return text;
+}
+
+/**
+ * Analyze upstream commits grouped by directory or feature type.
+ * Default: directory grouping. Use --by-feature for conventional commit grouping.
+ *
+ * @param {string} cwd - Working directory
+ * @param {object} options - { by_feature?: boolean, branch?: string }
+ * @param {function} output - Output callback
+ * @param {function} error - Error callback
+ * @param {boolean} raw - Output as JSON
+ */
+function cmdUpstreamAnalyze(cwd, options, output, error, raw) {
+  const upstreamConfig = loadUpstreamConfig(cwd);
+
+  // Check if upstream is configured
+  if (!upstreamConfig.url) {
+    error('Upstream not configured. Run: gsd-tools upstream configure <url>');
+    return;
+  }
+
+  // Get commits with files
+  const commits = getCommitsWithFiles(cwd);
+
+  // Handle zero state - up to date
+  if (commits.length === 0) {
+    const lastFetchDate = upstreamConfig.last_fetch
+      ? formatDate(new Date(upstreamConfig.last_fetch))
+      : 'never';
+
+    const result = {
+      grouped_by: options?.by_feature ? 'feature' : 'directory',
+      total_commits: 0,
+      groups: {},
+      message: `Up to date with upstream (last synced: ${lastFetchDate})`,
+    };
+
+    if (raw) {
+      output(result, true);
+    } else {
+      output(result, false, result.message);
+    }
+    return;
+  }
+
+  // Check for --by-feature flag
+  if (options?.by_feature) {
+    // Use existing groupCommitsByType for conventional commit grouping
+    const { groups, other } = groupCommitsByType(commits);
+
+    // Check if any conventional commits were found
+    const hasConventionalCommits = Object.keys(groups).length > 0;
+
+    if (!hasConventionalCommits || other.length > commits.length * 0.5) {
+      // Fallback to directory grouping with warning
+      const dirGroups = groupCommitsByDirectory(commits);
+
+      const result = {
+        grouped_by: 'directory',
+        reason: 'no_conventional_commits',
+        total_commits: commits.length,
+        groups: {},
+      };
+
+      // Convert Map to object for JSON
+      for (const [dir, commitSet] of dirGroups) {
+        result.groups[dir] = Array.from(commitSet).map(c => ({
+          hash: c.hash,
+          subject: c.subject,
+        }));
+      }
+
+      if (raw) {
+        output(result, true);
+      } else {
+        let text = 'Note: Few conventional commits found, falling back to directory grouping.\n\n';
+        text += formatDirectoryGroups(dirGroups);
+        output(result, false, text.trim());
+      }
+      return;
+    }
+
+    // Build result for feature grouping
+    const result = {
+      grouped_by: 'feature',
+      total_commits: commits.length,
+      groups: {},
+      other: [],
+    };
+
+    // Format groups for JSON output
+    for (const [type, typeCommits] of Object.entries(groups)) {
+      result.groups[type] = typeCommits.map(c => ({
+        hash: c.hash,
+        subject: c.parsed_description || c.subject,
+      }));
+    }
+
+    // Add non-conventional commits
+    result.other = other.map(c => ({
+      hash: c.hash,
+      subject: c.subject,
+    }));
+
+    if (raw) {
+      output(result, true);
+    } else {
+      // Format human-readable output
+      let text = '';
+
+      // Sort types by order in COMMIT_TYPES
+      const typeOrder = Object.keys(COMMIT_TYPES);
+      const sortedTypes = Object.keys(groups).sort(
+        (a, b) => typeOrder.indexOf(a) - typeOrder.indexOf(b)
+      );
+
+      for (const type of sortedTypes) {
+        const typeInfo = COMMIT_TYPES[type];
+        const typeCommits = groups[type];
+        text += `${typeInfo.emoji} ${typeInfo.label} (${typeCommits.length} commit${typeCommits.length === 1 ? '' : 's'})\n`;
+        for (const commit of typeCommits) {
+          text += `  ${commit.hash} ${truncateSubject(commit.subject)}\n`;
+        }
+        text += '\n';
+      }
+
+      // Add non-conventional commits at the end
+      if (other.length > 0) {
+        text += `Other (${other.length} commit${other.length === 1 ? '' : 's'})\n`;
+        for (const commit of other) {
+          text += `  ${commit.hash} ${truncateSubject(commit.subject)}\n`;
+        }
+        text += '\n';
+      }
+
+      output(result, false, text.trim());
+    }
+    return;
+  }
+
+  // Default: directory grouping
+  const dirGroups = groupCommitsByDirectory(commits);
+
+  // Build result for directory grouping
+  const result = {
+    grouped_by: 'directory',
+    total_commits: commits.length,
+    groups: {},
+  };
+
+  // Convert Map to object for JSON
+  for (const [dir, commitSet] of dirGroups) {
+    result.groups[dir] = Array.from(commitSet).map(c => ({
+      hash: c.hash,
+      subject: c.subject,
+    }));
+  }
+
+  if (raw) {
+    output(result, true);
+  } else {
+    const text = formatDirectoryGroups(dirGroups);
+    output(result, false, text.trim());
+  }
+}
+
 // ─── Git Version and Conflict Preview Functions ───────────────────────────────
 
 /**
@@ -2183,6 +2370,7 @@ module.exports = {
   cmdUpstreamFetch,
   cmdUpstreamStatus,
   cmdUpstreamLog,
+  cmdUpstreamAnalyze,
   cmdUpstreamPreview,
   cmdUpstreamResolve,
 
