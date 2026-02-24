@@ -62,6 +62,7 @@
  *   upstream preview                   Preview conflicts and binary changes
  *   upstream resolve [--ack N]         Address structural conflicts (--ack-all, --status)
  *   upstream abort [--restore branch]  Abort sync or restore from backup branch
+ *   upstream merge                     Merge upstream changes (creates backup branch)
  *
  * Roadmap Operations:
  *   roadmap get-phase <phase>          Extract phase section from ROADMAP.md
@@ -5145,8 +5146,10 @@ async function main() {
         const restore = restoreIdx !== -1 ? args[restoreIdx + 1] : null;
 
         upstreamModule.cmdUpstreamAbort(cwd, { restore }, output, error, raw);
+      } else if (subcommand === 'merge') {
+        upstreamModule.cmdUpstreamMerge(cwd, {}, output, error, raw);
       } else {
-        error('Unknown upstream subcommand. Available: configure, fetch, status, log, notification, analyze, preview, resolve, abort');
+        error('Unknown upstream subcommand. Available: configure, fetch, status, log, notification, analyze, preview, resolve, abort, merge');
       }
       break;
     }
