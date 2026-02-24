@@ -29,6 +29,14 @@ const RISK_FACTORS = {
   mediumConflict: 50,  // lines
 };
 
+// Binary file categories by risk level
+const BINARY_CATEGORIES = {
+  safe: ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.webp',
+         '.woff', '.woff2', '.ttf', '.eot', '.pdf'],
+  review: ['.json.gz', '.zip', '.tar', '.gz', '.bz2', '.7z'],
+  dangerous: ['.exe', '.dll', '.so', '.dylib', '.sh', '.bat', '.cmd'],
+};
+
 // Conventional commit type mappings with emoji and labels
 const COMMIT_TYPES = {
   feat:     { emoji: '\u2728', label: 'Features' },           // sparkles
@@ -945,6 +953,111 @@ function calculateOverallRisk(conflicts) {
   return 'EASY';
 }
 
+// ─── Binary File Detection Functions ──────────────────────────────────────────
+
+/**
+ * Detect binary file changes in upstream.
+ * Uses git diff --numstat where binary files show "- -" format.
+ * @param {string} cwd - Working directory
+ * @returns {{ safe: string[], review: string[], dangerous: string[], total: number }}
+ */
+function detectBinaryChanges(cwd) {
+  const remoteName = DEFAULT_REMOTE_NAME;
+  const branch = DEFAULT_BRANCH;
+
+  const result = execGit(cwd, ['diff', '--numstat', `HEAD..${remoteName}/${branch}`]);
+
+  const binaries = { safe: [], review: [], dangerous: [], total: 0 };
+
+  if (!result.success || !result.stdout) {
+    return binaries;
+  }
+
+  for (const line of result.stdout.split('\n').filter(Boolean)) {
+    // Binary format: "-\t-\tpath/to/file"
+    if (line.startsWith('-\t-\t')) {
+      const file = line.slice(4);
+      binaries.total++;
+
+      // Get the file extension (handle multi-part extensions like .json.gz)
+      const lowerFile = file.toLowerCase();
+
+      // Check dangerous first (executables, scripts)
+      const isDangerous = BINARY_CATEGORIES.dangerous.some(ext =>
+        lowerFile.endsWith(ext)
+      );
+      if (isDangerous) {
+        binaries.dangerous.push(file);
+        continue;
+      }
+
+      // Check review (archives, compressed data)
+      const needsReview = BINARY_CATEGORIES.review.some(ext =>
+        lowerFile.endsWith(ext)
+      );
+      if (needsReview) {
+        binaries.review.push(file);
+        continue;
+      }
+
+      // Check safe (images, fonts, documents)
+      const ext = '.' + file.split('.').pop().toLowerCase();
+      if (BINARY_CATEGORIES.safe.includes(ext)) {
+        binaries.safe.push(file);
+        continue;
+      }
+
+      // Unknown binary - default to review
+      binaries.review.push(file);
+    }
+  }
+
+  return binaries;
+}
+
+/**
+ * Format binary changes for human-readable output.
+ * @param {{ safe: string[], review: string[], dangerous: string[], total: number }} binaries
+ * @returns {string}
+ */
+function formatBinaryChanges(binaries) {
+  if (binaries.total === 0) {
+    return '';
+  }
+
+  const packageEmoji = '\uD83D\uDCE6'; // package
+  const warningEmoji = '\u26A0\uFE0F';  // warning
+  const dangerEmoji = '\uD83D\uDED1';   // stop sign
+
+  let text = `${packageEmoji} Binary Changes (${binaries.total} file${binaries.total === 1 ? '' : 's'})\n\n`;
+
+  if (binaries.safe.length > 0) {
+    text += `Safe (${binaries.safe.length}):\n`;
+    for (const file of binaries.safe) {
+      text += `  ${file}\n`;
+    }
+    text += '\n';
+  }
+
+  if (binaries.review.length > 0) {
+    text += `${warningEmoji} Review recommended (${binaries.review.length}):\n`;
+    for (const file of binaries.review) {
+      text += `  ${file}\n`;
+    }
+    text += '\n';
+  }
+
+  if (binaries.dangerous.length > 0) {
+    text += `${dangerEmoji} DANGEROUS - Manual review required (${binaries.dangerous.length}):\n`;
+    for (const file of binaries.dangerous) {
+      text += `  ${file}\n`;
+    }
+    text += '\n';
+  }
+
+  return text.trim();
+}
+
 // ─── Notification Functions ───────────────────────────────────────────────────
 
 /**
@@ -1077,6 +1190,7 @@ module.exports = {
   COMMIT_TYPES,
   CONVENTIONAL_PATTERN,
   RISK_FACTORS,
+  BINARY_CATEGORIES,
 
   // Helper functions
   execGit,
@@ -1094,6 +1208,10 @@ module.exports = {
   getDetailedConflicts,
   scoreConflictRisk,
   calculateOverallRisk,
+
+  // Binary detection functions
+  detectBinaryChanges,
+  formatBinaryChanges,
 
   // Commands
   cmdUpstreamConfigure,
