@@ -9,6 +9,16 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
+// Import worktree module for registry access
+const { loadRegistry } = require('./worktree.cjs');
+
+// Import test-discovery module for post-merge verification
+const {
+  discoverTestsForFiles,
+  runVerificationTests,
+  getForkModifiedFiles,
+} = require('./test-discovery.cjs');
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const DEFAULT_REMOTE_NAME = 'upstream';
@@ -1249,6 +1259,219 @@ function rollbackMerge(cwd, preMergeHead, backupBranch) {
   return { success: true, restored_to: preMergeHead };
 }
 
+// ─── Post-Merge Verification ──────────────────────────────────────────────────
+
+/**
+ * Handle verification failure by prompting user for action.
+ * Supports rollback to backup branch or keeping changes for manual fix.
+ *
+ * @param {string} cwd - Working directory
+ * @param {string} backupBranch - Backup branch name for rollback
+ * @param {string[]} failures - List of failed test descriptions
+ * @param {function} output - Output callback
+ * @param {function} error - Error callback
+ * @param {boolean} raw - Output as JSON
+ * @returns {Promise<{ action: 'rollback' | 'keep', success: boolean }>}
+ */
+async function handleVerificationFailure(cwd, backupBranch, failures, output, error, raw) {
+  const readline = require('readline');
+
+  // Display failure summary
+  const warningEmoji = '\u26A0\uFE0F'; // warning
+  const failureCount = failures.length;
+
+  if (!raw) {
+    console.log(`\n${warningEmoji} Post-merge verification failed!`);
+    console.log(`${failureCount} test failure${failureCount === 1 ? '' : 's'}:`);
+    failures.slice(0, 5).forEach(f => console.log(`  - ${f}`));
+    if (failures.length > 5) {
+      console.log(`  ... and ${failures.length - 5} more`);
+    }
+    console.log('');
+  }
+
+  // Prompt for action
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question('Rollback merge or keep and fix manually? (r/k): ', (answer) => {
+      rl.close();
+
+      const choice = answer.trim().toLowerCase();
+
+      if (choice === 'r' || choice === 'rollback') {
+        // Execute rollback using existing backup branch
+        const { execSync } = require('child_process');
+
+        try {
+          execSync(`git reset --hard ${backupBranch}`, {
+            cwd,
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+
+          const result = {
+            action: 'rollback',
+            success: true,
+            restored_to: backupBranch,
+            message: `Rolled back to ${backupBranch}`,
+          };
+
+          output(result, raw, `\u2705 Rolled back to ${backupBranch}`);
+          resolve(result);
+        } catch (err) {
+          const result = {
+            action: 'rollback',
+            success: false,
+            error: err.message,
+          };
+          error(`Failed to rollback: ${err.message}`);
+          resolve(result);
+        }
+      } else {
+        // Keep changes
+        const result = {
+          action: 'keep',
+          success: true,
+          message: 'Keeping changes. Fix failing tests manually.',
+        };
+
+        output(result, raw, 'Keeping changes. Fix failing tests manually.');
+        resolve(result);
+      }
+    });
+
+    // Handle non-TTY (batch mode) - default to keep
+    if (!process.stdin.isTTY) {
+      setTimeout(() => {
+        rl.close();
+        const result = {
+          action: 'keep',
+          success: true,
+          message: 'Non-interactive mode: keeping changes for manual fix.',
+        };
+        output(result, raw, 'Non-interactive mode: keeping changes for manual fix.');
+        resolve(result);
+      }, 100);
+    }
+  });
+}
+
+/**
+ * Run post-merge verification to test fork-specific customizations.
+ * Discovers tests for modified files and runs them.
+ *
+ * @param {string} cwd - Working directory
+ * @param {string} backupBranch - Backup branch name for potential rollback
+ * @param {function} output - Output callback
+ * @param {function} error - Error callback
+ * @param {boolean} raw - Output as JSON
+ * @returns {Promise<{ verified: boolean, tests_run: number, rollback?: boolean }>}
+ */
+async function runPostMergeVerification(cwd, backupBranch, output, error, raw) {
+  const checkEmoji = '\u2705';     // green check
+  const warningEmoji = '\u26A0\uFE0F'; // warning
+  const testEmoji = '\uD83E\uDDEA';    // test tube
+
+  if (!raw) {
+    console.log(`\n${testEmoji} Running post-merge verification...`);
+  }
+
+  // Step 1: Get fork-modified files
+  const modifiedFiles = getForkModifiedFiles(cwd);
+
+  if (modifiedFiles.length === 0) {
+    const result = {
+      verified: true,
+      tests_run: 0,
+      message: 'No fork-modified JavaScript files found',
+    };
+
+    if (!raw) {
+      console.log(`${checkEmoji} No fork-modified JavaScript files to verify`);
+    }
+
+    output(result, raw);
+    return result;
+  }
+
+  // Step 2: Discover tests for modified files
+  const discovery = discoverTestsForFiles(cwd, modifiedFiles);
+
+  if (discovery.tests.length === 0) {
+    // Warn but don't fail if no tests found
+    const result = {
+      verified: true,
+      tests_run: 0,
+      coverage: discovery.coverage,
+      message: `No tests found for ${modifiedFiles.length} modified file(s)`,
+    };
+
+    if (!raw) {
+      console.log(`${warningEmoji} No tests found for ${modifiedFiles.length} modified file(s)`);
+      if (discovery.unmapped.length > 0 && discovery.unmapped.length <= 5) {
+        console.log('Unmapped files:');
+        discovery.unmapped.forEach(f => console.log(`  - ${f}`));
+      }
+    }
+
+    output(result, raw);
+    return result;
+  }
+
+  if (!raw) {
+    console.log(`Found ${discovery.tests.length} test file(s) for ${discovery.coverage.mapped} modified file(s)`);
+  }
+
+  // Step 3: Run tests with progressive output
+  const testResult = await runVerificationTests(cwd, discovery.tests, {
+    progressive: !raw,
+    stdout: process.stdout,
+  });
+
+  // Step 4: Handle results
+  if (testResult.passed) {
+    const result = {
+      verified: true,
+      tests_run: testResult.total,
+      passed_count: testResult.passed_count,
+      coverage: discovery.coverage,
+      message: `All ${testResult.total} test(s) passed`,
+    };
+
+    if (!raw) {
+      console.log(`${checkEmoji} Verification complete: ${testResult.passed_count} test(s) passed`);
+    }
+
+    output(result, raw);
+    return result;
+  }
+
+  // Tests failed - prompt for action
+  const failureResult = await handleVerificationFailure(
+    cwd,
+    backupBranch,
+    testResult.failures,
+    output,
+    error,
+    raw
+  );
+
+  return {
+    verified: false,
+    tests_run: testResult.total,
+    passed_count: testResult.passed_count,
+    failed_count: testResult.failed_count,
+    failures: testResult.failures,
+    action_taken: failureResult.action,
+    rollback: failureResult.action === 'rollback',
+    coverage: discovery.coverage,
+  };
+}
+
 /**
  * Merge upstream changes with safety net (backup branch and automatic rollback).
  *
@@ -1264,12 +1487,13 @@ function rollbackMerge(cwd, preMergeHead, backupBranch) {
  * - All events logged to STATE.md Sync History
  *
  * @param {string} cwd - Working directory
- * @param {object} options - Reserved for future options
+ * @param {object} options - { skip_verify?: boolean }
  * @param {function} output - Output callback
  * @param {function} error - Error callback
  * @param {boolean} raw - Output as JSON
+ * @returns {Promise<void>}
  */
-function cmdUpstreamMerge(cwd, options, output, error, raw) {
+async function cmdUpstreamMerge(cwd, options, output, error, raw) {
   // Step 1: Check upstream is configured
   const config = loadUpstreamConfig(cwd);
   if (!config.url) {
@@ -1381,12 +1605,33 @@ function cmdUpstreamMerge(cwd, options, output, error, raw) {
     appendSyncHistoryEntry(cwd, SYNC_EVENTS.MERGE_COMPLETE,
       `${preMergeHead.slice(0, 7)}..${newHead.slice(0, 7)} (${commitCount} commits)`);
 
+    // Step 10: Run post-merge verification (unless skipped)
+    let verification = null;
+    if (!options?.skip_verify) {
+      verification = await runPostMergeVerification(
+        cwd,
+        backup.branch,
+        output,
+        error,
+        raw
+      );
+
+      // If user chose to rollback due to test failures, don't output success
+      if (verification.rollback) {
+        return;
+      }
+    }
+
     output({
       merged: true,
       commits: commitCount,
       from: preMergeHead.slice(0, 7),
       to: newHead.slice(0, 7),
       backup_branch: backup.branch,
+      verification: verification ? {
+        verified: verification.verified,
+        tests_run: verification.tests_run,
+      } : null,
       message: `Merged ${commitCount} commits from upstream/${branch}.\nBackup branch: ${backup.branch}`
     }, raw);
 
@@ -3821,6 +4066,10 @@ module.exports = {
 
   // Merge helpers
   rollbackMerge,
+
+  // Post-merge verification
+  runPostMergeVerification,
+  handleVerificationFailure,
 
   // Conflict preview functions
   checkGitVersion,
