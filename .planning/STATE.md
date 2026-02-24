@@ -4,17 +4,17 @@
 
 **Core Value:** Enable GSD fork maintainers to stay current with upstream while preserving custom enhancements through intelligent sync tooling.
 
-**Current Focus:** Phase 5 - Core Infrastructure (configure, fetch, status, notifications)
+**Current Focus:** Phase 6 - Analysis (conflict preview, risk scoring, binary detection)
 
 ## Current Position
 
-**Phase:** 5 - Core Infrastructure
-**Plan:** 5-04 complete, 5-05 ready
-**Status:** Milestone complete
-**Last activity:** 2026-02-24 — Completed plan 5-04 (notification check functions)
+**Phase:** 6 - Analysis
+**Plan:** 6-02 complete, 6-03 ready
+**Status:** In progress
+**Last activity:** 2026-02-24 — Completed plan 6-02 (conflict preview with risk scoring)
 
 ```
-[########............] 40% - Phase 5 plan 4 complete
+[##########..........] 50% - Phase 6 plan 2 complete
 ```
 
 **Phases:**
@@ -28,9 +28,9 @@
 
 | Metric | Value |
 |--------|-------|
-| Plans completed (v1.1) | 4 |
+| Plans completed (v1.1) | 6 |
 | Plans failed (v1.1) | 0 |
-| Current streak | 4 |
+| Current streak | 6 |
 | v1.0 plans completed | 11 |
 
 ## Accumulated Context
@@ -56,6 +56,10 @@
 | Silent network errors for notifications | Session start should never fail due to network issues | 2026-02-24 |
 | Quote shell arguments in execGit | Prevent shell interpretation of special chars (%, |, etc.) | 2026-02-24 |
 | Human-readable output mode | Support text > 20 chars as human-readable in output function | 2026-02-24 |
+| Git version check for merge-tree | Check Git 2.38+ before using --write-tree | 2026-02-24 |
+| Risk scoring thresholds | easy (<2), moderate (<5), hard (>=5) with file type weights | 2026-02-24 |
+| Binary file categories | safe (images/fonts), review (archives), dangerous (executables) | 2026-02-24 |
+| Analysis state in config.json | Store analyzed_sha, conflict_count, binary_acknowledged | 2026-02-24 |
 
 ### Implementation Notes
 
@@ -83,6 +87,10 @@
 - [x] Execute plan 5-03 (gsd-tools CLI routing)
 - [x] Execute plan 5-04 (notification check functions)
 - [ ] Execute plan 5-05 (session workflow integration)
+- [x] Execute plan 6-01 (commit grouping by directory)
+- [x] Execute plan 6-02 (conflict preview with risk scoring)
+- [ ] Execute plan 6-03 (structural conflict detection)
+- [ ] Execute plan 6-04 (CLI routing for analysis commands)
 
 ### Blockers
 
@@ -91,11 +99,11 @@ None currently.
 ## Session Continuity
 
 **Last Session:** 2026-02-24
-**Context:** Completed plan 5-04 - added checkUpstreamNotification and formatNotificationBanner to upstream.cjs. Uses 24-hour cache, handles network errors silently. CLI command `upstream notification` available with --refresh flag.
+**Context:** Completed plan 6-02 - added conflict preview via git merge-tree --write-tree with risk scoring. Binary detection categorizes files as safe/review/dangerous. cmdUpstreamPreview command with analysis state persistence.
 
 **To Resume:**
-1. Execute plan 5-05 (session workflow integration)
-2. Continue through remaining Phase 5 plans
+1. Execute plan 6-03 (structural conflict detection)
+2. Continue through remaining Phase 6 plans
 
 ---
 *State initialized: 2026-02-23*
