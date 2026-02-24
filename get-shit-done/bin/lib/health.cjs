@@ -14,6 +14,9 @@ const { execSync } = require('child_process');
 // Import worktree module for registry access
 const { loadRegistry, saveRegistry } = require('./worktree.cjs');
 
+// Import upstream module for sync state access
+const { loadUpstreamConfig, CONFIG_PATH } = require('./upstream.cjs');
+
 // ─── Exit Codes (per CONTEXT.md decision) ─────────────────────────────────────
 
 const HEALTH_EXIT_CODES = {
@@ -323,7 +326,25 @@ function cmdHealthCheck(cwd, options, output, raw) {
     });
   }
 
-  // ─── 4. Compute exit code and status ────────────────────────────────────────
+  // ─── 4. Sync health checks (Phase 8 integration) ────────────────────────────
+  const syncIssues = checkSyncHealth(cwd);
+  for (const syncIssue of syncIssues) {
+    issues.push({
+      type: syncIssue.type,
+      phase: null,
+      path: null,
+      branch: null,
+      age_days: null,
+      suggested_action: syncIssue.suggested_action,
+      repairable: syncIssue.repairable,
+      metadata: {
+        ...syncIssue.metadata,
+        message: syncIssue.message,
+      },
+    });
+  }
+
+  // ─── 5. Compute exit code and status ────────────────────────────────────────
 
   const orphanTypes = ['path_missing', 'not_in_git', 'not_in_registry', 'stale_lock', 'age_exceeded'];
   const incompleteTypes = ['incomplete_finalization', 'merge_in_progress'];
@@ -344,6 +365,9 @@ function cmdHealthCheck(cwd, options, output, raw) {
 
   const status = issues.length === 0 ? 'healthy' : (issues.some(i => !i.repairable) ? 'broken' : 'degraded');
 
+  // Sync issue types for summary
+  const syncIssueTypes = ['stale_analysis', 'analysis_outdated', 'sync_merge_incomplete', 'orphaned_analysis_state', 'binary_files_pending'];
+
   const result = {
     status,
     issues,
@@ -352,10 +376,153 @@ function cmdHealthCheck(cwd, options, output, raw) {
       orphan_count: issues.filter(i => ['path_missing', 'not_in_git', 'not_in_registry', 'age_exceeded'].includes(i.type)).length,
       stale_lock_count: issues.filter(i => i.type === 'stale_lock').length,
       incomplete_count: issues.filter(i => incompleteTypes.includes(i.type)).length,
+      sync_issue_count: issues.filter(i => syncIssueTypes.includes(i.type)).length,
     },
   };
 
   output(result, raw);
+}
+
+// ─── Sync Health Check ────────────────────────────────────────────────────────
+
+/**
+ * Check sync-related health issues.
+ * Detects: stale analysis state, outdated analysis (SHA mismatch),
+ * incomplete merge, and orphaned suggestions.
+ *
+ * @param {string} cwd - Working directory
+ * @returns {Array<{ type: string, message: string, suggested_action: string, repairable: boolean, metadata?: object }>}
+ */
+function checkSyncHealth(cwd) {
+  const issues = [];
+  const upstreamConfig = loadUpstreamConfig(cwd);
+
+  // Skip if upstream is not configured
+  if (!upstreamConfig.url) {
+    return issues;
+  }
+
+  const analysis = upstreamConfig.analysis;
+
+  // ─── 1. Stale analysis state (>24 hours) ────────────────────────────────────
+  if (analysis && analysis.analyzed_at) {
+    const analyzedTime = new Date(analysis.analyzed_at).getTime();
+    const now = Date.now();
+    const ageHours = (now - analyzedTime) / (1000 * 60 * 60);
+
+    if (ageHours > 24) {
+      issues.push({
+        type: 'stale_analysis',
+        message: `Sync analysis state is stale (${Math.round(ageHours)} hours old)`,
+        suggested_action: 'Run sync status to refresh or clear with sync clear-state',
+        repairable: true,
+        metadata: {
+          analyzed_at: analysis.analyzed_at,
+          age_hours: Math.round(ageHours),
+        },
+      });
+    }
+  }
+
+  // ─── 2. Analysis outdated (SHA mismatch) ────────────────────────────────────
+  if (analysis && analysis.analyzed_sha && upstreamConfig.last_upstream_sha) {
+    if (analysis.analyzed_sha !== upstreamConfig.last_upstream_sha) {
+      issues.push({
+        type: 'analysis_outdated',
+        message: 'Sync analysis is for an older upstream state',
+        suggested_action: 'Run sync preview to re-analyze with current upstream',
+        repairable: true,
+        metadata: {
+          analyzed_sha: analysis.analyzed_sha,
+          current_upstream_sha: upstreamConfig.last_upstream_sha,
+        },
+      });
+    }
+  }
+
+  // ─── 3. Incomplete merge (MERGE_HEAD exists) ────────────────────────────────
+  // Check for merge-in-progress in git state
+  const gitDir = path.join(cwd, '.git');
+  let actualGitDir = gitDir;
+
+  if (fs.existsSync(gitDir)) {
+    const gitStat = fs.statSync(gitDir);
+    if (gitStat.isFile()) {
+      // It's a worktree, read the pointer
+      const gitContent = fs.readFileSync(gitDir, 'utf-8').trim();
+      const match = gitContent.match(/^gitdir:\s*(.+)$/);
+      if (match) {
+        actualGitDir = path.resolve(cwd, match[1]);
+      }
+    }
+  }
+
+  const mergeHeadPath = path.join(actualGitDir, 'MERGE_HEAD');
+  if (fs.existsSync(mergeHeadPath)) {
+    // Read MERGE_HEAD to get the commit being merged
+    let mergeHead = null;
+    try {
+      mergeHead = fs.readFileSync(mergeHeadPath, 'utf-8').trim().slice(0, 7);
+    } catch {
+      // Ignore read errors
+    }
+
+    issues.push({
+      type: 'sync_merge_incomplete',
+      message: 'A sync merge is in progress but not completed',
+      suggested_action: 'Complete merge with git merge --continue or abort with git merge --abort',
+      repairable: false,
+      metadata: {
+        merge_head: mergeHead,
+        merge_head_file: mergeHeadPath,
+      },
+    });
+  }
+
+  // ─── 4. Orphaned suggestions (conflicts exist but analysis shows none) ──────
+  if (analysis) {
+    const hasStructuralConflicts = analysis.structural_conflicts && analysis.structural_conflicts.length > 0;
+    const conflictCount = analysis.conflict_count || 0;
+
+    // Check if all structural conflicts are acknowledged but there are still unresolved conflicts
+    if (hasStructuralConflicts) {
+      const allAcknowledged = analysis.structural_conflicts.every(c => c.acknowledged);
+      if (allAcknowledged && conflictCount > 0) {
+        // Structural conflicts acknowledged but content conflicts remain
+        // This is normal - just informational
+      }
+
+      // Check for orphaned state: no upstream commits behind but analysis state exists
+      if (upstreamConfig.commits_behind === 0 && !mergeHeadPath) {
+        issues.push({
+          type: 'orphaned_analysis_state',
+          message: 'Analysis state exists but fork is up to date with upstream',
+          suggested_action: 'Clear stale analysis state with sync clear-state',
+          repairable: true,
+          metadata: {
+            structural_conflicts: analysis.structural_conflicts.length,
+            commits_behind: upstreamConfig.commits_behind,
+          },
+        });
+      }
+    }
+
+    // Check for binary files pending acknowledgment
+    if (analysis.binary_files && analysis.binary_files.length > 0 && !analysis.binary_acknowledged) {
+      issues.push({
+        type: 'binary_files_pending',
+        message: `${analysis.binary_files.length} binary file(s) pending acknowledgment`,
+        suggested_action: 'Review binary changes and acknowledge before merge',
+        repairable: false,
+        metadata: {
+          binary_count: analysis.binary_files.length,
+          binary_files: analysis.binary_files.slice(0, 5), // Limit to first 5
+        },
+      });
+    }
+  }
+
+  return issues;
 }
 
 // ─── Repair Helpers ───────────────────────────────────────────────────────────
@@ -721,6 +888,9 @@ module.exports = {
   // Health check functions
   runQuickHealthCheck,
   cmdHealthCheck,
+
+  // Sync health check
+  checkSyncHealth,
 
   // Repair functions
   hasUncommittedChanges,

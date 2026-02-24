@@ -5163,6 +5163,27 @@ async function main() {
       if (subcommand === 'explore') {
         const hash = args[2];
 
+        // Handle help flag
+        if (hash === '--help' || hash === '-h') {
+          console.log('Usage: sync explore <hash>');
+          console.log('');
+          console.log('Start interactive exploration of an upstream commit.');
+          console.log('');
+          console.log('Arguments:');
+          console.log('  <hash>  Commit hash from upstream (run upstream status to see available commits)');
+          console.log('');
+          console.log('Commands in explore mode:');
+          console.log('  files      Show files changed in this commit');
+          console.log('  diff       Show diff (or diff <filename> for specific file)');
+          console.log('  conflicts  Show predicted conflicts');
+          console.log('  related    Show related commits (touch same files)');
+          console.log('  next       Navigate to next commit in range');
+          console.log('  prev       Navigate to previous commit');
+          console.log('  ask <q>    Ask Claude a question about this commit');
+          console.log('  quit       Exit exploration');
+          break;
+        }
+
         // Validate hash provided
         if (!hash) {
           error('Commit hash required. Usage: sync explore <hash>');
