@@ -59,17 +59,21 @@ function execGit(cwd, args) {
 
 /**
  * Load upstream configuration from .planning/config.json.
+ * Returns the upstream section plus notification settings.
  * @param {string} cwd - Working directory
- * @returns {{ url?: string, last_fetch?: string, commits_behind?: number, last_upstream_sha?: string }}
+ * @returns {{ upstream: object, notifications_enabled: boolean }}
  */
 function loadUpstreamConfig(cwd) {
   const configPath = path.join(cwd, CONFIG_PATH);
   try {
     const content = fs.readFileSync(configPath, 'utf-8');
     const config = JSON.parse(content);
-    return config.upstream || {};
+    return {
+      ...(config.upstream || {}),
+      notifications_enabled: config.upstream_notifications !== false, // default true
+    };
   } catch {
-    return {};
+    return { notifications_enabled: true };
   }
 }
 
@@ -683,6 +687,127 @@ function cmdUpstreamLog(cwd, options, output, error, raw) {
   }
 }
 
+// ─── Notification Functions ───────────────────────────────────────────────────
+
+/**
+ * Check for upstream updates for session-start notification.
+ * Uses cache for fast response, never throws errors.
+ *
+ * @param {string} cwd - Working directory
+ * @param {object} options - { fetch?: boolean } - if true, attempt fresh fetch
+ * @returns {{ enabled: boolean, commits_behind?: number, cached?: boolean, fetch_failed?: boolean, last_fetch?: string, notifications_enabled?: boolean, reason?: string }}
+ */
+function checkUpstreamNotification(cwd, options = {}) {
+  const config = loadUpstreamConfig(cwd);
+
+  // Check if upstream is configured
+  if (!config.url) {
+    return { enabled: false, reason: 'not_configured' };
+  }
+
+  // Check if notifications are disabled by user
+  if (!config.notifications_enabled) {
+    return {
+      enabled: true,
+      notifications_enabled: false,
+      commits_behind: config.commits_behind || null,
+      reason: 'disabled_by_user',
+    };
+  }
+
+  // Check if cache is valid (within 24 hours)
+  const now = Date.now();
+  let cacheValid = false;
+  if (config.last_fetch) {
+    const lastFetchTime = new Date(config.last_fetch).getTime();
+    cacheValid = (now - lastFetchTime) < CACHE_DURATION_MS;
+  }
+
+  // If cache is valid and no refresh requested, return cached value
+  if (cacheValid && options.fetch !== true) {
+    return {
+      enabled: true,
+      commits_behind: config.commits_behind || 0,
+      cached: true,
+      fetch_failed: false,
+      last_fetch: config.last_fetch,
+      notifications_enabled: true,
+    };
+  }
+
+  // If refresh not requested and cache is stale, still return cached value
+  if (options.fetch !== true) {
+    return {
+      enabled: true,
+      commits_behind: config.commits_behind || null,
+      cached: true,
+      fetch_failed: false,
+      last_fetch: config.last_fetch || null,
+      notifications_enabled: true,
+    };
+  }
+
+  // Attempt fresh fetch (only if explicitly requested)
+  const fetchResult = execGit(cwd, ['fetch', DEFAULT_REMOTE_NAME, '--quiet']);
+
+  if (!fetchResult.success) {
+    // Network error - return cached value with fetch_failed flag
+    return {
+      enabled: true,
+      commits_behind: config.commits_behind || null,
+      cached: true,
+      fetch_failed: true,
+      last_fetch: config.last_fetch || null,
+      notifications_enabled: true,
+    };
+  }
+
+  // Fetch succeeded - count commits behind
+  const countResult = execGit(cwd, ['rev-list', '--count', `HEAD..${DEFAULT_REMOTE_NAME}/${DEFAULT_BRANCH}`]);
+  const commitsBehind = countResult.success ? parseInt(countResult.stdout, 10) : 0;
+
+  // Update cache
+  const configPath = path.join(cwd, CONFIG_PATH);
+  try {
+    const content = fs.readFileSync(configPath, 'utf-8');
+    const fullConfig = JSON.parse(content);
+    fullConfig.upstream = fullConfig.upstream || {};
+    fullConfig.upstream.last_fetch = new Date().toISOString();
+    fullConfig.upstream.commits_behind = commitsBehind;
+    fs.writeFileSync(configPath, JSON.stringify(fullConfig, null, 2) + '\n', 'utf-8');
+  } catch {
+    // Silently ignore cache update errors
+  }
+
+  return {
+    enabled: true,
+    commits_behind: commitsBehind,
+    cached: false,
+    fetch_failed: false,
+    last_fetch: new Date().toISOString(),
+    notifications_enabled: true,
+  };
+}
+
+/**
+ * Format the notification check result for session banner display.
+ *
+ * @param {{ enabled: boolean, commits_behind?: number, notifications_enabled?: boolean }} result
+ * @returns {string|null} - Banner text or null if no notification needed
+ */
+function formatNotificationBanner(result) {
+  if (!result.enabled) return null;
+  if (!result.notifications_enabled) return null;
+  if (result.commits_behind === null || result.commits_behind === undefined) return null;
+
+  if (result.commits_behind === 0) {
+    return 'Fork is up to date with upstream';
+  }
+
+  const s = result.commits_behind === 1 ? '' : 's';
+  return `${result.commits_behind} upstream commit${s} available. Run /gsd:sync-status for details`;
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -709,4 +834,8 @@ module.exports = {
   cmdUpstreamFetch,
   cmdUpstreamStatus,
   cmdUpstreamLog,
+
+  // Notification functions
+  checkUpstreamNotification,
+  formatNotificationBanner,
 };
