@@ -493,8 +493,14 @@ function parseMustHavesBlock(content, blockName) {
 }
 
 function output(result, raw, rawValue) {
+  // If raw mode with rawValue, output the rawValue string
   if (raw && rawValue !== undefined) {
     process.stdout.write(String(rawValue));
+  }
+  // If non-raw mode with rawValue (human-readable text), output that text
+  else if (!raw && rawValue !== undefined && typeof rawValue === 'string' && rawValue.length > 20) {
+    // Heuristic: if rawValue is longer than 20 chars, treat it as human-readable text
+    process.stdout.write(rawValue);
   } else {
     const json = JSON.stringify(result, null, 2);
     // Large payloads exceed Claude Code's Bash tool buffer (~50KB).

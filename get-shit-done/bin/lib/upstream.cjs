@@ -43,7 +43,16 @@ const CONVENTIONAL_PATTERN = /^(\w+)(?:\([^)]+\))?!?:\s*(.+)/;
  */
 function execGit(cwd, args) {
   try {
-    const stdout = execSync(`git ${args.join(' ')}`, {
+    // Quote arguments containing special shell characters
+    const quotedArgs = args.map(arg => {
+      // If arg contains shell-special chars, wrap in single quotes
+      // (escape any existing single quotes first)
+      if (/[%|&;<>()$`\\"\s]/.test(arg)) {
+        return `'${arg.replace(/'/g, "'\\''")}'`;
+      }
+      return arg;
+    });
+    const stdout = execSync(`git ${quotedArgs.join(' ')}`, {
       cwd,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
