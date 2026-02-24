@@ -29,7 +29,13 @@ This roadmap delivers upstream sync tooling for GSD fork maintainers. The journe
   3. User can see how many commits behind upstream they are with summary info
   4. User can view upstream commit log with author, date, and message summaries
   5. Starting a GSD session shows notification when upstream has new commits
-**Plans:** TBD
+**Plans:** 4 plans
+
+Plans:
+- [ ] 5-01-PLAN.md — Create upstream.cjs module with configure and fetch operations
+- [ ] 5-02-PLAN.md — Add status and log commands to upstream.cjs
+- [ ] 5-03-PLAN.md — Integrate upstream commands into gsd-tools.cjs CLI
+- [ ] 5-04-PLAN.md — Add notification check for session start integration
 
 ### Phase 6: Analysis
 **Goal**: Provide visibility into upstream changes with grouping and conflict prediction
@@ -83,7 +89,7 @@ Phases execute in numeric order: 5 -> 6 -> 7 -> 8 -> 9
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 5. Core Infrastructure | 0/? | Not started | - |
+| 5. Core Infrastructure | 0/4 | In progress | - |
 | 6. Analysis | 0/? | Not started | - |
 | 7. Merge Operations | 0/? | Not started | - |
 | 8. Interactive & Integration | 0/? | Not started | - |
@@ -91,4 +97,4 @@ Phases execute in numeric order: 5 -> 6 -> 7 -> 8 -> 9
 
 ---
 *Roadmap created: 2026-02-23*
-*Last updated: 2026-02-23*
+*Last updated: 2026-02-24*
