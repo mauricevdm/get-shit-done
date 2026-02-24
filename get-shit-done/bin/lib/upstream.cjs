@@ -16,6 +16,23 @@ const DEFAULT_BRANCH = 'main';
 const CACHE_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
 const CONFIG_PATH = '.planning/config.json';
 
+// Conventional commit type mappings with emoji and labels
+const COMMIT_TYPES = {
+  feat:     { emoji: '\u2728', label: 'Features' },           // sparkles
+  fix:      { emoji: '\uD83D\uDC1B', label: 'Fixes' },         // bug
+  refactor: { emoji: '\u267B\uFE0F', label: 'Refactors' },     // recycling
+  docs:     { emoji: '\uD83D\uDCDA', label: 'Documentation' }, // books
+  test:     { emoji: '\u2705', label: 'Tests' },              // check mark
+  chore:    { emoji: '\uD83D\uDD27', label: 'Chores' },        // wrench
+  style:    { emoji: '\uD83D\uDC84', label: 'Styles' },        // lipstick
+  perf:     { emoji: '\u26A1', label: 'Performance' },        // lightning
+  ci:       { emoji: '\uD83D\uDC77', label: 'CI' },            // construction worker
+  build:    { emoji: '\uD83C\uDFD7\uFE0F', label: 'Build' },    // building construction
+};
+
+// Pattern to match conventional commits: type(scope)?: description
+const CONVENTIONAL_PATTERN = /^(\w+)(?:\([^)]+\))?!?:\s*(.+)/;
+
 // ─── Helper Functions ─────────────────────────────────────────────────────────
 
 /**
@@ -475,6 +492,197 @@ function formatDate(date) {
   }
 }
 
+// ─── Conventional Commit Helpers ───────────────────────────────────────────────
+
+/**
+ * Parse a conventional commit subject line.
+ * @param {string} subject - Commit subject line
+ * @returns {{ type: string, description: string } | null}
+ */
+function parseConventionalCommit(subject) {
+  const match = subject.match(CONVENTIONAL_PATTERN);
+  if (match) {
+    const [, type, description] = match;
+    return { type: type.toLowerCase(), description };
+  }
+  return null;
+}
+
+/**
+ * Group commits by conventional commit type.
+ * @param {{ hash: string, author: string, date: string, subject: string }[]} commits
+ * @returns {{ groups: Record<string, object[]>, other: object[] }}
+ */
+function groupCommitsByType(commits) {
+  const groups = {};
+  const other = [];
+
+  for (const commit of commits) {
+    const parsed = parseConventionalCommit(commit.subject);
+    if (parsed && COMMIT_TYPES[parsed.type]) {
+      const type = parsed.type;
+      if (!groups[type]) groups[type] = [];
+      groups[type].push({
+        ...commit,
+        parsed_type: type,
+        parsed_description: parsed.description,
+      });
+    } else {
+      other.push(commit);
+    }
+  }
+
+  return { groups, other };
+}
+
+/**
+ * Truncate a string with ellipsis.
+ * @param {string} str - String to truncate
+ * @param {number} maxLen - Maximum length (default 60)
+ * @returns {string}
+ */
+function truncateSubject(str, maxLen = 60) {
+  if (str.length <= maxLen) return str;
+  return str.slice(0, maxLen - 3) + '...';
+}
+
+// ─── Log Command ──────────────────────────────────────────────────────────────
+
+/**
+ * Show upstream commit log grouped by conventional commit type.
+ *
+ * @param {string} cwd - Working directory
+ * @param {object} options - { branch?: string, limit?: number }
+ * @param {function} output - Output callback
+ * @param {function} error - Error callback
+ * @param {boolean} raw - Output as JSON
+ */
+function cmdUpstreamLog(cwd, options, output, error, raw) {
+  const upstreamConfig = loadUpstreamConfig(cwd);
+
+  // Check if upstream is configured
+  if (!upstreamConfig.url) {
+    error('Upstream not configured. Run: gsd-tools upstream configure <url>');
+    return;
+  }
+
+  const remoteName = DEFAULT_REMOTE_NAME;
+  const branch = options?.branch || DEFAULT_BRANCH;
+
+  // Get commits using parseable format: hash|author|date|subject
+  const logResult = execGit(cwd, ['log', '--format=%h|%an|%as|%s', `HEAD..${remoteName}/${branch}`]);
+
+  if (!logResult.success) {
+    error(`Failed to get commit log: ${logResult.stderr}. Try running 'gsd-tools upstream fetch' first.`);
+    return;
+  }
+
+  // Handle zero state
+  if (!logResult.stdout || logResult.stdout.trim() === '') {
+    const lastFetchDate = upstreamConfig.last_fetch
+      ? formatDate(new Date(upstreamConfig.last_fetch))
+      : 'never';
+
+    const result = {
+      total_commits: 0,
+      grouped: false,
+      groups: {},
+      other: [],
+      message: `Up to date with upstream (last synced: ${lastFetchDate})`,
+    };
+
+    if (raw) {
+      output(result, true);
+    } else {
+      output(result, false, result.message);
+    }
+    return;
+  }
+
+  // Parse commit lines
+  const lines = logResult.stdout.split('\n').filter(Boolean);
+  const commits = lines.map(line => {
+    const [hash, author, date, ...subjectParts] = line.split('|');
+    return {
+      hash: hash.trim(),
+      author: author.trim(),
+      date: date.trim(),
+      subject: subjectParts.join('|').trim(), // Rejoin in case subject contains |
+    };
+  });
+
+  // Group by conventional commit type
+  const { groups, other } = groupCommitsByType(commits);
+
+  // Check if any conventional commits were found
+  const hasConventionalCommits = Object.keys(groups).length > 0;
+
+  // Build result
+  const result = {
+    total_commits: commits.length,
+    grouped: hasConventionalCommits,
+    groups: {},
+    other: [],
+  };
+
+  // Format groups for JSON output
+  for (const [type, typeCommits] of Object.entries(groups)) {
+    result.groups[type] = typeCommits.map(c => ({
+      hash: c.hash,
+      subject: c.parsed_description,
+    }));
+  }
+
+  // Add non-conventional commits
+  result.other = other.map(c => ({
+    hash: c.hash,
+    subject: c.subject,
+  }));
+
+  if (raw) {
+    output(result, true);
+  } else {
+    // Format human-readable output per CONTEXT.md
+    let text = '';
+
+    if (hasConventionalCommits) {
+      // Output grouped format
+      // Sort types by order in COMMIT_TYPES
+      const typeOrder = Object.keys(COMMIT_TYPES);
+      const sortedTypes = Object.keys(groups).sort(
+        (a, b) => typeOrder.indexOf(a) - typeOrder.indexOf(b)
+      );
+
+      for (const type of sortedTypes) {
+        const typeInfo = COMMIT_TYPES[type];
+        const typeCommits = groups[type];
+        text += `${typeInfo.emoji} ${typeInfo.label} (${typeCommits.length} commit${typeCommits.length === 1 ? '' : 's'})\n`;
+        for (const commit of typeCommits) {
+          text += `  ${commit.hash} ${truncateSubject(commit.subject)}\n`;
+        }
+        text += '\n';
+      }
+
+      // Add non-conventional commits at the end
+      if (other.length > 0) {
+        text += `Other (${other.length} commit${other.length === 1 ? '' : 's'})\n`;
+        for (const commit of other) {
+          text += `  ${commit.hash} ${truncateSubject(commit.subject)}\n`;
+        }
+        text += '\n';
+      }
+    } else {
+      // Fallback to flat chronological list
+      text = `${commits.length} commits (flat chronological list):\n\n`;
+      for (const commit of commits) {
+        text += `  ${commit.hash} ${truncateSubject(commit.subject)}\n`;
+      }
+    }
+
+    output(result, false, text.trim());
+  }
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -483,6 +691,8 @@ module.exports = {
   DEFAULT_BRANCH,
   CACHE_DURATION_MS,
   CONFIG_PATH,
+  COMMIT_TYPES,
+  CONVENTIONAL_PATTERN,
 
   // Helper functions
   execGit,
@@ -490,9 +700,13 @@ module.exports = {
   saveUpstreamConfig,
   getRemotes,
   formatDate,
+  parseConventionalCommit,
+  groupCommitsByType,
+  truncateSubject,
 
   // Commands
   cmdUpstreamConfigure,
   cmdUpstreamFetch,
   cmdUpstreamStatus,
+  cmdUpstreamLog,
 };
