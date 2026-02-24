@@ -9,12 +9,12 @@
 ## Current Position
 
 **Phase:** 6 - Analysis
-**Plan:** 6-03 complete, 6-04 ready
+**Plan:** 6-04 complete, Phase 6 complete
 **Status:** In progress
-**Last activity:** 2026-02-24 — Completed plan 6-03 (structural conflict resolution)
+**Last activity:** 2026-02-24 — Completed plan 6-04 (CLI routing + workflow commands)
 
 ```
-[###########.........] 55% - Phase 6 plan 3 complete
+[#############.......] 65% - Phase 6 complete
 ```
 
 **Phases:**
@@ -28,9 +28,9 @@
 
 | Metric | Value |
 |--------|-------|
-| Plans completed (v1.1) | 7 |
+| Plans completed (v1.1) | 8 |
 | Plans failed (v1.1) | 0 |
-| Current streak | 7 |
+| Current streak | 8 |
 | v1.0 plans completed | 11 |
 
 ## Accumulated Context
@@ -63,6 +63,7 @@
 | 90% rename similarity threshold | Reduces false positives from unrelated files | 2026-02-24 |
 | Fork modification check | Only flag conflicts where fork actually changed the file | 2026-02-24 |
 | Adaptive directory depth | Refine at >50% clustering AND >5 total commits; cap at 2 levels | 2026-02-24 |
+| Workflow commands at commands/gsd/ | Discovered actual path differs from documentation; commands discoverable there | 2026-02-24 |
 
 ### Implementation Notes
 
@@ -93,7 +94,7 @@
 - [x] Execute plan 6-01 (commit grouping by directory)
 - [x] Execute plan 6-02 (conflict preview with risk scoring)
 - [x] Execute plan 6-03 (structural conflict detection)
-- [ ] Execute plan 6-04 (CLI routing for analysis commands)
+- [x] Execute plan 6-04 (CLI routing for analysis commands)
 
 ### Blockers
 
@@ -102,12 +103,12 @@ None currently.
 ## Session Continuity
 
 **Last Session:** 2026-02-24
-**Context:** Completed plan 6-01 - added commit grouping functions to upstream.cjs. getCommitsWithFiles retrieves commits with affected files, groupCommitsByDirectory groups by top-level directory with adaptive depth, cmdUpstreamAnalyze supports directory grouping (default) and feature grouping (--by-feature flag).
+**Context:** Completed plan 6-04 - added CLI routing for upstream analyze/preview/resolve commands and created workflow command files sync-analyze.md, sync-preview.md, sync-resolve.md. Phase 6 Analysis is now complete.
 
 **To Resume:**
-1. Execute plan 6-04 (CLI routing for analysis commands)
-2. Continue through remaining Phase 6 plans
+1. Plan and execute Phase 7 (Merge Operations)
+2. Continue through remaining phases
 
 ---
 *State initialized: 2026-02-23*
-*Last updated: 2026-02-24*
+*Last updated: 2026-02-24 (Phase 6 complete)*
