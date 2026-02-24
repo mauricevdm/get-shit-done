@@ -121,6 +121,8 @@ None currently.
 
 | Date | Event | Details |
 |------|-------|---------|
+| 2026-02-24 17:20 | backup-created | backup/pre-sync-2026-02-24-152046 |
+| 2026-02-24 17:20 | backup-created | backup/pre-sync-2026-02-24-152042 |
 | 2026-02-24 17:19 | fetch | 5 new commits from upstream |
 ---
 *State initialized: 2026-02-23*

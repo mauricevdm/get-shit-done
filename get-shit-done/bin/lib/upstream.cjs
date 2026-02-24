@@ -861,6 +861,121 @@ function getSyncHistory(cwd, options = {}) {
   }
 }
 
+// ─── Backup Branch Management ─────────────────────────────────────────────────
+
+/**
+ * Format a timestamp for backup branch naming.
+ * Format: "YYYY-MM-DD-HHMMSS" (UTC)
+ * @returns {string}
+ */
+function formatBackupTimestamp() {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(now.getUTCDate()).padStart(2, '0');
+  const hours = String(now.getUTCHours()).padStart(2, '0');
+  const minutes = String(now.getUTCMinutes()).padStart(2, '0');
+  const seconds = String(now.getUTCSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day}-${hours}${minutes}${seconds}`;
+}
+
+/**
+ * Parse a backup branch timestamp from branch name.
+ * Extracts the date portion for display.
+ * @param {string} branchName - Full branch name (e.g., "backup/pre-sync-2026-02-24-143200")
+ * @returns {string} - Formatted date (e.g., "2026-02-24 14:32")
+ */
+function parseBackupTimestamp(branchName) {
+  // Extract timestamp part: YYYY-MM-DD-HHMMSS
+  const match = branchName.match(/backup\/pre-sync-(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})/);
+  if (match) {
+    const [, year, month, day, hours, minutes] = match;
+    return `${year}-${month}-${day} ${hours}:${minutes}`;
+  }
+  // Fallback - just return branch name suffix
+  return branchName.replace(BACKUP_BRANCH_PREFIX, '');
+}
+
+/**
+ * Create a backup branch with timestamped name.
+ * Fails if branch already exists (indicates incomplete previous sync).
+ * Logs to sync history automatically.
+ *
+ * @param {string} cwd - Working directory
+ * @returns {{ success: boolean, branch?: string, error?: string }}
+ */
+function createBackupBranch(cwd) {
+  // Generate timestamped branch name
+  const timestamp = formatBackupTimestamp();
+  const branchName = `${BACKUP_BRANCH_PREFIX}${timestamp}`;
+
+  // Create branch (fail if exists - indicates incomplete previous sync)
+  const result = execGit(cwd, ['branch', branchName]);
+
+  if (!result.success) {
+    // Check if it's a "already exists" error
+    if (result.stderr && result.stderr.includes('already exists')) {
+      return {
+        success: false,
+        error: `Backup branch ${branchName} already exists. This may indicate an incomplete previous sync.`,
+      };
+    }
+    return {
+      success: false,
+      error: result.stderr || 'Failed to create backup branch',
+    };
+  }
+
+  // Log to sync history
+  appendSyncHistoryEntry(cwd, SYNC_EVENTS.BACKUP_CREATED, branchName);
+
+  return {
+    success: true,
+    branch: branchName,
+  };
+}
+
+/**
+ * List all backup branches sorted by date (most recent first).
+ *
+ * @param {string} cwd - Working directory
+ * @returns {Array<{ name: string, date: string }>}
+ */
+function listBackupBranches(cwd) {
+  // Run: git branch --list 'backup/pre-sync-*' --format='%(refname:short)'
+  const result = execGit(cwd, ['branch', '--list', 'backup/pre-sync-*', "--format=%(refname:short)"]);
+
+  if (!result.success || !result.stdout) {
+    return [];
+  }
+
+  // Parse branch names
+  const branches = result.stdout
+    .split('\n')
+    .filter(Boolean)
+    .map(name => ({
+      name: name.trim(),
+      date: parseBackupTimestamp(name.trim()),
+    }));
+
+  // Sort by date descending (most recent first)
+  // The timestamp format YYYY-MM-DD-HHMMSS sorts lexicographically
+  branches.sort((a, b) => b.name.localeCompare(a.name));
+
+  return branches;
+}
+
+/**
+ * Get the most recent backup branch.
+ *
+ * @param {string} cwd - Working directory
+ * @returns {{ name: string, date: string } | null}
+ */
+function getLatestBackupBranch(cwd) {
+  const branches = listBackupBranches(cwd);
+  return branches.length > 0 ? branches[0] : null;
+}
+
 // ─── Conventional Commit Helpers ───────────────────────────────────────────────
 
 /**
@@ -2519,6 +2634,11 @@ module.exports = {
   // Sync history logging functions
   appendSyncHistoryEntry,
   getSyncHistory,
+
+  // Backup branch management functions
+  createBackupBranch,
+  listBackupBranches,
+  getLatestBackupBranch,
 
   // Conflict preview functions
   checkGitVersion,
