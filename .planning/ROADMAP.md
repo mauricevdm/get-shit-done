@@ -57,17 +57,15 @@ Plans:
 
 ### Phase 06.1: Local Modifications Integration (INSERTED)
 
-**Goal:** Migrate workflow paths from global to project-local and add finalize-phase command
+**Goal:** Add missing finalize-phase command to enable /gsd:finalize-phase
 **Depends on:** Phase 6
 **Source:** Local modifications made to ~/Projects/OpenClaw/gsd (installed GSD v1.20.3)
 **Changes to integrate:**
   1. New finalize-phase command file (merge to main, cleanup worktree)
-  2. Path updates from global (~/.claude/) to project-local (gsd/) installation
-**Plans:** 2 plans
+**Plans:** 1 plan
 
 Plans:
 - [ ] 06.1-01-PLAN.md — Create finalize-phase command file
-- [ ] 06.1-02-PLAN.md — Update workflow paths from global to project-local
 
 ### Phase 7: Merge Operations
 **Goal**: Enable safe upstream merges with automatic backup, atomic execution, and recovery
@@ -123,7 +121,7 @@ Phases execute in numeric order: 5 -> 6 -> 6.1 -> 7 -> 8 -> 9
 |-------|----------------|--------|-----------|
 | 5. Core Infrastructure | 4/4 | Complete | 2026-02-24 |
 | 6. Analysis | 4/4 | Complete | 2026-02-24 |
-| 6.1 Local Modifications Integration | 0/2 | Planned | - |
+| 6.1 Local Modifications Integration | 0/1 | Planned | - |
 | 7. Merge Operations | 0/3 | Ready | - |
 | 8. Interactive & Integration | 0/4 | Planned | - |
 | 9. Documentation | 0/? | Not started | - |
