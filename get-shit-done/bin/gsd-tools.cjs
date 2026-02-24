@@ -58,6 +58,9 @@
  *   upstream status                    Show commits behind with file summary
  *   upstream log                       Show grouped commit log
  *   upstream notification [--refresh]  Check for upstream updates (for session banner)
+ *   upstream analyze [--by-feature]    Show commits grouped by directory or feature
+ *   upstream preview                   Preview conflicts and binary changes
+ *   upstream resolve [--ack N]         Address structural conflicts (--ack-all, --status)
  *
  * Roadmap Operations:
  *   roadmap get-phase <phase>          Extract phase section from ROADMAP.md
@@ -5116,8 +5119,27 @@ async function main() {
             console.log(banner);
           }
         }
+      } else if (subcommand === 'analyze') {
+        const byFeature = args.includes('--by-feature');
+        upstreamModule.cmdUpstreamAnalyze(cwd, { by_feature: byFeature }, output, error, raw);
+      } else if (subcommand === 'preview') {
+        upstreamModule.cmdUpstreamPreview(cwd, {}, output, error, raw);
+      } else if (subcommand === 'resolve') {
+        // Parse resolve options
+        const ackIndex = args.indexOf('--ack');
+        const acknowledge = ackIndex !== -1 ? parseInt(args[ackIndex + 1], 10) : null;
+        const acknowledgeAll = args.includes('--ack-all');
+        const status = args.includes('--status');
+        const list = !acknowledge && !acknowledgeAll && !status;
+
+        upstreamModule.cmdUpstreamResolve(cwd, {
+          list,
+          acknowledge,
+          acknowledge_all: acknowledgeAll,
+          status,
+        }, output, error, raw);
       } else {
-        error('Unknown upstream subcommand. Available: configure, fetch, status, log, notification');
+        error('Unknown upstream subcommand. Available: configure, fetch, status, log, notification, analyze, preview, resolve');
       }
       break;
     }
