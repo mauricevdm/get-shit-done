@@ -161,6 +161,80 @@ function getRemotes(cwd) {
   return Array.from(remotes.entries()).map(([name, url]) => ({ name, url }));
 }
 
+/**
+ * Get upstream commits with their affected files.
+ * Uses git log with --name-only to retrieve commit metadata and file lists.
+ *
+ * @param {string} cwd - Working directory
+ * @returns {{ hash: string, author: string, date: string, subject: string, files: string[] }[]}
+ */
+function getCommitsWithFiles(cwd) {
+  const config = loadUpstreamConfig(cwd);
+
+  // Check if upstream is configured
+  if (!config.url) {
+    return [];
+  }
+
+  const remoteName = DEFAULT_REMOTE_NAME;
+  const branch = DEFAULT_BRANCH;
+
+  // Get commits with format and file names
+  // Format: hash|author|date|subject followed by blank line and file names
+  const logResult = execGit(cwd, [
+    'log',
+    '--format=%h|%an|%as|%s',
+    '--name-only',
+    `HEAD..${remoteName}/${branch}`,
+  ]);
+
+  if (!logResult.success || !logResult.stdout || logResult.stdout.trim() === '') {
+    return [];
+  }
+
+  // Parse the output - commits are separated by blank lines
+  // Each commit block: metadata line, then file names (one per line)
+  const lines = logResult.stdout.split('\n');
+  const commits = [];
+  let currentCommit = null;
+
+  for (const line of lines) {
+    if (line === '') {
+      // Blank line - if we have a current commit with files, it's complete
+      // The next non-blank line will be a new commit metadata line
+      continue;
+    }
+
+    // Check if this is a metadata line (contains |)
+    if (line.includes('|')) {
+      // Save previous commit if exists
+      if (currentCommit) {
+        commits.push(currentCommit);
+      }
+
+      // Parse new commit metadata
+      const [hash, author, date, ...subjectParts] = line.split('|');
+      currentCommit = {
+        hash: hash.trim(),
+        author: author.trim(),
+        date: date.trim(),
+        subject: subjectParts.join('|').trim(), // Rejoin in case subject contains |
+        files: [],
+      };
+    } else if (currentCommit) {
+      // This is a file name
+      currentCommit.files.push(line.trim());
+    }
+  }
+
+  // Don't forget the last commit
+  if (currentCommit) {
+    commits.push(currentCommit);
+  }
+
+  return commits;
+}
+
 // ─── Configure Command ────────────────────────────────────────────────────────
 
 /**
@@ -1729,6 +1803,7 @@ module.exports = {
   loadUpstreamConfig,
   saveUpstreamConfig,
   getRemotes,
+  getCommitsWithFiles,
   formatDate,
   parseConventionalCommit,
   groupCommitsByType,
