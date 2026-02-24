@@ -34,8 +34,8 @@ This roadmap delivers upstream sync tooling for GSD fork maintainers. The journe
 Plans:
 - [x] 5-01-PLAN.md — Create upstream.cjs module with configure and fetch operations
 - [x] 5-02-PLAN.md — Add status and log commands to upstream.cjs
-- [ ] 5-03-PLAN.md — Integrate upstream commands into gsd-tools.cjs CLI
-- [ ] 5-04-PLAN.md — Add notification check for session start integration
+- [x] 5-03-PLAN.md — Integrate upstream commands into gsd-tools.cjs CLI
+- [x] 5-04-PLAN.md — Add notification check for session start integration
 
 ### Phase 6: Analysis
 **Goal**: Provide visibility into upstream changes with grouping and conflict prediction
@@ -46,7 +46,13 @@ Plans:
   2. User can preview which files would conflict before attempting merge
   3. User receives warning about rename/delete conflicts that need manual attention
   4. User is notified when upstream contains binary file changes
-**Plans:** TBD
+**Plans:** 4 plans
+
+Plans:
+- [ ] 6-01-PLAN.md — Commit grouping functions in upstream.cjs (cmdUpstreamAnalyze)
+- [ ] 6-02-PLAN.md — Conflict preview with risk scoring (cmdUpstreamPreview)
+- [ ] 6-03-PLAN.md — Structural conflict resolution workflow (cmdUpstreamResolve)
+- [ ] 6-04-PLAN.md — gsd-tools CLI routing + workflow command integration
 
 ### Phase 7: Merge Operations
 **Goal**: Enable safe upstream merges with automatic backup, atomic execution, and recovery
@@ -95,7 +101,7 @@ Phases execute in numeric order: 5 -> 6 -> 7 -> 8 -> 9
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 5. Core Infrastructure | 4/4 | Complete    | 2026-02-24 |
-| 6. Analysis | 0/? | Not started | - |
+| 6. Analysis | 0/4 | Planned | - |
 | 7. Merge Operations | 0/3 | Planned | - |
 | 8. Interactive & Integration | 0/? | Not started | - |
 | 9. Documentation | 0/? | Not started | - |
