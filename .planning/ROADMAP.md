@@ -62,7 +62,7 @@ Plans:
 **Source:** Local modifications made to ~/Projects/OpenClaw/gsd (installed GSD v1.20.3)
 **Changes to integrate:**
   1. New finalize-phase command file (merge to main, cleanup worktree)
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 
 Plans:
 - [x] 06.1-01-PLAN.md — Create finalize-phase command file
