@@ -1209,6 +1209,186 @@ function cmdUpstreamAbort(cwd, options, output, error, raw) {
   }
 }
 
+// ─── Merge Command ────────────────────────────────────────────────────────────
+
+/**
+ * Rollback a failed merge to the pre-merge state.
+ *
+ * @param {string} cwd - Working directory
+ * @param {string} preMergeHead - SHA of HEAD before merge
+ * @param {string} backupBranch - Name of backup branch
+ * @returns {{ success: boolean, restored_to: string }}
+ */
+function rollbackMerge(cwd, preMergeHead, backupBranch) {
+  // Abort any in-progress merge (ignore errors if no merge in progress)
+  execGit(cwd, ['merge', '--abort']);
+
+  // Reset to pre-merge state
+  const resetResult = execGit(cwd, ['reset', '--hard', preMergeHead]);
+
+  if (!resetResult.success) {
+    // Log rollback failure - this is serious
+    appendSyncHistoryEntry(cwd, SYNC_EVENTS.ROLLBACK_EXECUTED,
+      `FAILED to restore to ${preMergeHead.slice(0, 7)}: ${resetResult.stderr}`);
+    return { success: false, restored_to: preMergeHead };
+  }
+
+  // Log successful rollback
+  appendSyncHistoryEntry(cwd, SYNC_EVENTS.ROLLBACK_EXECUTED,
+    `Restored to ${preMergeHead.slice(0, 7)} after merge failure`);
+
+  return { success: true, restored_to: preMergeHead };
+}
+
+/**
+ * Merge upstream changes with safety net (backup branch and automatic rollback).
+ *
+ * Pre-merge validation:
+ * 1. Upstream must be configured
+ * 2. Working tree must be clean
+ * 3. No merge already in progress
+ * 4. Must have commits to merge
+ *
+ * Safety:
+ * - Creates backup branch before merge
+ * - Automatic rollback on any failure
+ * - All events logged to STATE.md Sync History
+ *
+ * @param {string} cwd - Working directory
+ * @param {object} options - Reserved for future options
+ * @param {function} output - Output callback
+ * @param {function} error - Error callback
+ * @param {boolean} raw - Output as JSON
+ */
+function cmdUpstreamMerge(cwd, options, output, error, raw) {
+  // Step 1: Check upstream is configured
+  const config = loadUpstreamConfig(cwd);
+  if (!config.url) {
+    error('Upstream not configured. Run: gsd-tools upstream configure');
+    return;
+  }
+
+  // Step 2: Check working tree is clean
+  const workingTree = checkWorkingTreeClean(cwd);
+  if (!workingTree.clean) {
+    let msg = 'Working tree has uncommitted changes.';
+    if (workingTree.staged || workingTree.unstaged || workingTree.untracked) {
+      const parts = [];
+      if (workingTree.staged) parts.push(`${workingTree.staged} staged`);
+      if (workingTree.unstaged) parts.push(`${workingTree.unstaged} unstaged`);
+      if (workingTree.untracked) parts.push(`${workingTree.untracked} untracked`);
+      msg += ` (${parts.join(', ')})`;
+    }
+    msg += '\nCommit or stash your changes before merging:\n' +
+      '  git stash         # to stash temporarily\n' +
+      '  git commit -am "WIP"  # to commit';
+    error(msg);
+    return;
+  }
+
+  // Step 3: Check merge not already in progress
+  const gitDir = getGitDir(cwd);
+  if (gitDir) {
+    const mergeHeadPath = path.join(gitDir, 'MERGE_HEAD');
+    if (fs.existsSync(mergeHeadPath)) {
+      error('A merge is already in progress.\n' +
+        'To abort: git merge --abort\n' +
+        'To continue: resolve conflicts and run git merge --continue');
+      return;
+    }
+  }
+
+  // Step 4: Verify we have commits to merge
+  const remoteName = DEFAULT_REMOTE_NAME;
+  const branch = DEFAULT_BRANCH;
+  const countResult = execGit(cwd, ['rev-list', '--count', `HEAD..${remoteName}/${branch}`]);
+
+  if (!countResult.success) {
+    error(`Failed to check upstream commits: ${countResult.stderr}. Try running 'gsd-tools upstream fetch' first.`);
+    return;
+  }
+
+  const commitCount = parseInt(countResult.stdout.trim(), 10);
+  if (commitCount === 0) {
+    output({
+      merged: false,
+      reason: 'up_to_date',
+      message: 'Already up to date with upstream'
+    }, raw);
+    return;
+  }
+
+  // Step 5: Capture pre-merge HEAD
+  const headResult = execGit(cwd, ['rev-parse', 'HEAD']);
+  if (!headResult.success) {
+    error('Failed to get current HEAD');
+    return;
+  }
+  const preMergeHead = headResult.stdout.trim();
+
+  // Step 6: Create backup branch
+  const backup = createBackupBranch(cwd);
+  if (!backup.success) {
+    error(`Failed to create backup branch: ${backup.error}`);
+    return;
+  }
+
+  // Step 7: Log merge start
+  appendSyncHistoryEntry(cwd, SYNC_EVENTS.MERGE_START,
+    `Merging ${commitCount} commits from ${remoteName}/${branch}`);
+
+  // Step 8: Attempt merge
+  try {
+    const mergeResult = execGit(cwd, [
+      'merge', `${remoteName}/${branch}`, '--no-ff',
+      '-m', `sync: merge ${commitCount} upstream commits`
+    ]);
+
+    if (!mergeResult.success) {
+      // Check if it's a conflict
+      if (mergeResult.stderr && (
+        mergeResult.stderr.includes('Automatic merge failed') ||
+        mergeResult.stderr.includes('CONFLICT'))) {
+        appendSyncHistoryEntry(cwd, SYNC_EVENTS.CONFLICT_DETECTED,
+          `Conflicts in merge from ${remoteName}/${branch}`);
+      }
+
+      // Rollback
+      rollbackMerge(cwd, preMergeHead, backup.branch);
+      appendSyncHistoryEntry(cwd, SYNC_EVENTS.MERGE_FAILED,
+        `Merge failed: ${(mergeResult.stderr || '').split('\n')[0]}`);
+
+      error(`Merge failed due to conflicts.\n` +
+        `Rolled back to pre-merge state (${preMergeHead.slice(0, 7)}).\n` +
+        `Backup branch preserved: ${backup.branch}\n` +
+        `To view conflicts that would occur: gsd-tools upstream preview`);
+      return;
+    }
+
+    // Step 9: Log success
+    const newHeadResult = execGit(cwd, ['rev-parse', 'HEAD']);
+    const newHead = newHeadResult.success ? newHeadResult.stdout.trim() : 'unknown';
+
+    appendSyncHistoryEntry(cwd, SYNC_EVENTS.MERGE_COMPLETE,
+      `${preMergeHead.slice(0, 7)}..${newHead.slice(0, 7)} (${commitCount} commits)`);
+
+    output({
+      merged: true,
+      commits: commitCount,
+      from: preMergeHead.slice(0, 7),
+      to: newHead.slice(0, 7),
+      backup_branch: backup.branch,
+      message: `Merged ${commitCount} commits from upstream/${branch}.\nBackup branch: ${backup.branch}`
+    }, raw);
+
+  } catch (err) {
+    // Unexpected error - rollback
+    rollbackMerge(cwd, preMergeHead, backup.branch);
+    appendSyncHistoryEntry(cwd, SYNC_EVENTS.MERGE_FAILED, `Error: ${err.message}`);
+    error(`Merge failed unexpectedly: ${err.message}\nRolled back to ${preMergeHead.slice(0, 7)}`);
+  }
+}
+
 // ─── Conventional Commit Helpers ───────────────────────────────────────────────
 
 /**
@@ -2878,6 +3058,9 @@ module.exports = {
   detectMergeInProgress,
   checkWorkingTreeClean,
 
+  // Merge helpers
+  rollbackMerge,
+
   // Conflict preview functions
   checkGitVersion,
   getConflictPreview,
@@ -2908,6 +3091,7 @@ module.exports = {
   cmdUpstreamPreview,
   cmdUpstreamResolve,
   cmdUpstreamAbort,
+  cmdUpstreamMerge,
 
   // Notification functions
   checkUpstreamNotification,
