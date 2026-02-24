@@ -651,6 +651,9 @@ function cmdUpstreamStatus(cwd, options, output, error, raw) {
     warnings.unpushed_commits = unpushedCommits;
   }
 
+  // Generate and store suggestions for potential conflicts
+  const suggestions = generateSuggestions(cwd);
+
   // Build result
   const result = {
     commits_behind: commitsBehind,
@@ -659,6 +662,7 @@ function cmdUpstreamStatus(cwd, options, output, error, raw) {
     directories: directories.slice(0, 5), // Top 5 directories
     file_list: fileList,
     warnings,
+    suggestions,
     cache_stale: cacheStale,
   };
 
@@ -695,6 +699,11 @@ function cmdUpstreamStatus(cwd, options, output, error, raw) {
     }
     if (warnings.unpushed_commits) {
       text += `\n\u26A0 ${warnings.unpushed_commits} unpushed commits to origin`;
+    }
+
+    // Add suggestions section if any exist
+    if (suggestions && suggestions.length > 0) {
+      text += formatSuggestions(suggestions);
     }
 
     output(result, false, text.trim());
@@ -3271,6 +3280,502 @@ function formatNotificationBanner(result) {
   return `${result.commits_behind} upstream commit${s} available. Run /gsd:sync-status for details`;
 }
 
+// ─── Semantic Similarity Detection and Suggestions ───────────────────────────
+
+/**
+ * Suggestion severity levels
+ */
+const SUGGESTION_SEVERITY = {
+  HIGH: 'high',
+  MEDIUM: 'medium',
+  LOW: 'low',
+};
+
+/**
+ * Suggestion types
+ */
+const SUGGESTION_TYPES = {
+  RENAME_CONFLICT: 'rename_conflict',
+  SIGNATURE_CONFLICT: 'signature_conflict',
+  IMPORT_CONFLICT: 'import_conflict',
+};
+
+/**
+ * Function signature pattern for detecting function definition changes.
+ * Matches: async function name(params), function name(params)
+ */
+const FUNCTION_SIGNATURE_PATTERN = /^[+-]\s*(async\s+)?function\s+(\w+)\s*\(([^)]*)\)/;
+
+/**
+ * CommonJS module.exports pattern for detecting export changes
+ */
+const MODULE_EXPORTS_PATTERN = /^[+-]\s*module\.exports\s*[=.]/;
+
+/**
+ * Require pattern for detecting imports
+ */
+const REQUIRE_PATTERN = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+
+/**
+ * Detect files modified in both fork and upstream.
+ * These are potential merge conflict points.
+ * @param {string} cwd - Working directory
+ * @returns {string[]} - List of file paths modified in both
+ */
+function getFilesModifiedInBoth(cwd) {
+  // Files modified in upstream (since fork)
+  const upstreamResult = execGit(cwd, ['diff', '--name-only', `HEAD..${DEFAULT_REMOTE_NAME}/${DEFAULT_BRANCH}`]);
+  if (!upstreamResult.success || !upstreamResult.stdout) {
+    return [];
+  }
+  const upstreamFiles = new Set(upstreamResult.stdout.split('\n').filter(Boolean));
+
+  // Files modified in fork (since upstream)
+  const forkResult = execGit(cwd, ['diff', '--name-only', `${DEFAULT_REMOTE_NAME}/${DEFAULT_BRANCH}..HEAD`]);
+  if (!forkResult.success || !forkResult.stdout) {
+    return [];
+  }
+  const forkFiles = forkResult.stdout.split('\n').filter(Boolean);
+
+  // Intersection: files in both
+  return forkFiles.filter(f => upstreamFiles.has(f));
+}
+
+/**
+ * Detect function signature changes in a file's diff.
+ * @param {string} cwd - Working directory
+ * @param {string} file - File path to analyze
+ * @returns {Array<{ name: string, ours: string, theirs: string, line: number }>}
+ */
+function detectFunctionSignatureChanges(cwd, file) {
+  // Get unified diff for the file in upstream
+  const diffResult = execGit(cwd, ['diff', '-U3', `HEAD..${DEFAULT_REMOTE_NAME}/${DEFAULT_BRANCH}`, '--', file]);
+
+  if (!diffResult.success || !diffResult.stdout) {
+    return [];
+  }
+
+  const changes = [];
+  const lines = diffResult.stdout.split('\n');
+  let lineNum = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Track line numbers from @@ markers
+    const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)/);
+    if (hunkMatch) {
+      lineNum = parseInt(hunkMatch[1], 10);
+      continue;
+    }
+
+    // Check for function signature changes (added or removed)
+    const match = line.match(FUNCTION_SIGNATURE_PATTERN);
+    if (match) {
+      const prefix = line[0]; // + or -
+      const isAsync = !!match[1];
+      const funcName = match[2];
+      const params = match[3].trim();
+
+      // Look for the corresponding opposite change
+      const searchPrefix = prefix === '+' ? '-' : '+';
+      const oppositePattern = new RegExp(`^\\${searchPrefix}\\s*(async\\s+)?function\\s+${funcName}\\s*\\(([^)]*)\\)`);
+
+      for (let j = Math.max(0, i - 10); j < Math.min(lines.length, i + 10); j++) {
+        if (j === i) continue;
+        const oppMatch = lines[j].match(oppositePattern);
+        if (oppMatch) {
+          const oppParams = oppMatch[2].trim();
+          if (params !== oppParams) {
+            // Signature changed
+            changes.push({
+              name: funcName,
+              ours: prefix === '-' ? `${isAsync ? 'async ' : ''}function ${funcName}(${params})` : `${oppMatch[1] || ''}function ${funcName}(${oppParams})`,
+              theirs: prefix === '+' ? `${isAsync ? 'async ' : ''}function ${funcName}(${params})` : `${oppMatch[1] || ''}function ${funcName}(${oppParams})`,
+              line: lineNum,
+            });
+          }
+          break;
+        }
+      }
+    }
+
+    // Track line position
+    if (!line.startsWith('-')) {
+      lineNum++;
+    }
+  }
+
+  return changes;
+}
+
+/**
+ * Detect module.exports changes in upstream that might affect fork imports.
+ * @param {string} cwd - Working directory
+ * @returns {Array<{ module: string, exports_changed: boolean }>}
+ */
+function detectExportChanges(cwd) {
+  const diffResult = execGit(cwd, ['diff', `HEAD..${DEFAULT_REMOTE_NAME}/${DEFAULT_BRANCH}`]);
+
+  if (!diffResult.success || !diffResult.stdout) {
+    return [];
+  }
+
+  const changes = [];
+  const lines = diffResult.stdout.split('\n');
+  let currentFile = null;
+
+  for (const line of lines) {
+    // Track current file
+    const fileMatch = line.match(/^diff --git a\/(.+) b\//);
+    if (fileMatch) {
+      currentFile = fileMatch[1];
+      continue;
+    }
+
+    // Check for module.exports changes
+    if (currentFile && MODULE_EXPORTS_PATTERN.test(line)) {
+      if (!changes.some(c => c.module === currentFile)) {
+        changes.push({
+          module: currentFile,
+          exports_changed: true,
+        });
+      }
+    }
+  }
+
+  return changes;
+}
+
+/**
+ * Find fork files that import a given module.
+ * @param {string} cwd - Working directory
+ * @param {string} modulePath - Module path to search for
+ * @returns {string[]} - List of files that require the module
+ */
+function findFilesRequiringModule(cwd, modulePath) {
+  // Get all JS/CJS files modified in fork
+  const forkResult = execGit(cwd, ['diff', '--name-only', `${DEFAULT_REMOTE_NAME}/${DEFAULT_BRANCH}..HEAD`]);
+
+  if (!forkResult.success || !forkResult.stdout) {
+    return [];
+  }
+
+  const forkFiles = forkResult.stdout.split('\n').filter(f => f.endsWith('.js') || f.endsWith('.cjs'));
+  const importingFiles = [];
+
+  for (const file of forkFiles) {
+    try {
+      const content = fs.readFileSync(path.join(cwd, file), 'utf-8');
+      // Check if file requires the module
+      const matches = content.matchAll(REQUIRE_PATTERN);
+      for (const match of matches) {
+        const requiredPath = match[1];
+        // Normalize and compare paths
+        if (requiredPath.includes(modulePath) ||
+            requiredPath.endsWith(path.basename(modulePath)) ||
+            modulePath.endsWith(requiredPath.replace(/^\.\//, ''))) {
+          importingFiles.push(file);
+          break;
+        }
+      }
+    } catch {
+      // File doesn't exist or can't be read
+    }
+  }
+
+  return importingFiles;
+}
+
+/**
+ * Detect semantic similarities and potential merge issues.
+ * Returns suggestions for refactoring actions.
+ *
+ * @param {string} cwd - Working directory
+ * @returns {Array<{ id: number, type: string, severity: string, file: string, what: string, why: string, fix: string, apply_command: string }>}
+ */
+function detectSemanticSimilarities(cwd) {
+  const suggestions = [];
+  let suggestionId = 1;
+
+  // 1. Detect rename conflicts where fork has modifications
+  const renames = detectRenames(cwd);
+  for (const rename of renames) {
+    if (rename.fork_modified) {
+      suggestions.push({
+        id: suggestionId++,
+        type: SUGGESTION_TYPES.RENAME_CONFLICT,
+        severity: SUGGESTION_SEVERITY.HIGH,
+        file: rename.from,
+        what: `File "${rename.from}" was renamed to "${rename.to}" in upstream, but fork has modifications`,
+        why: 'Merge will likely fail because fork changes target a file that no longer exists in upstream',
+        fix: `Apply fork changes to the renamed file "${rename.to}" before merging`,
+        apply_command: `gsd-tools sync apply-suggestion ${suggestionId - 1}`,
+        _meta: { from: rename.from, to: rename.to, modifications: rename.modifications },
+      });
+    }
+  }
+
+  // 2. Detect function signature conflicts
+  const filesInBoth = getFilesModifiedInBoth(cwd);
+  for (const file of filesInBoth) {
+    if (!file.endsWith('.js') && !file.endsWith('.cjs')) continue;
+
+    const sigChanges = detectFunctionSignatureChanges(cwd, file);
+    for (const change of sigChanges) {
+      suggestions.push({
+        id: suggestionId++,
+        type: SUGGESTION_TYPES.SIGNATURE_CONFLICT,
+        severity: SUGGESTION_SEVERITY.MEDIUM,
+        file,
+        what: `Function "${change.name}" signature changed in upstream`,
+        why: `Fork and upstream both modified this file. Signature change may require updating call sites.`,
+        fix: `Update fork calls to "${change.name}" to match new signature: ${change.theirs}`,
+        apply_command: `gsd-tools sync apply-suggestion ${suggestionId - 1}`,
+        _meta: { function_name: change.name, ours: change.ours, theirs: change.theirs, line: change.line },
+      });
+    }
+  }
+
+  // 3. Detect import relationship conflicts
+  const exportChanges = detectExportChanges(cwd);
+  for (const change of exportChanges) {
+    const importingFiles = findFilesRequiringModule(cwd, change.module);
+    if (importingFiles.length > 0) {
+      suggestions.push({
+        id: suggestionId++,
+        type: SUGGESTION_TYPES.IMPORT_CONFLICT,
+        severity: SUGGESTION_SEVERITY.LOW,
+        file: change.module,
+        what: `Module "${change.module}" exports changed in upstream`,
+        why: `Fork files (${importingFiles.join(', ')}) import this module. Export changes may break imports.`,
+        fix: `Review and update imports in: ${importingFiles.join(', ')}`,
+        apply_command: `gsd-tools sync apply-suggestion ${suggestionId - 1}`,
+        _meta: { module: change.module, importing_files: importingFiles },
+      });
+    }
+  }
+
+  return suggestions;
+}
+
+/**
+ * Generate and store suggestions in config.json.
+ * Assigns sequential IDs and caches for apply-suggestion command.
+ *
+ * @param {string} cwd - Working directory
+ * @returns {Array} - Generated suggestions
+ */
+function generateSuggestions(cwd) {
+  const suggestions = detectSemanticSimilarities(cwd);
+
+  // Store in config.json under upstream.analysis.suggestions
+  const configPath = path.join(cwd, CONFIG_PATH);
+  try {
+    const content = fs.readFileSync(configPath, 'utf-8');
+    const config = JSON.parse(content);
+
+    config.upstream = config.upstream || {};
+    config.upstream.analysis = config.upstream.analysis || {};
+    config.upstream.analysis.suggestions = suggestions;
+    config.upstream.analysis.suggestions_generated_at = new Date().toISOString();
+
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+  } catch {
+    // Config doesn't exist or can't be written - suggestions still returned
+  }
+
+  return suggestions;
+}
+
+/**
+ * Load stored suggestions from config.json.
+ * @param {string} cwd - Working directory
+ * @returns {Array} - Stored suggestions or empty array
+ */
+function loadSuggestions(cwd) {
+  const configPath = path.join(cwd, CONFIG_PATH);
+  try {
+    const content = fs.readFileSync(configPath, 'utf-8');
+    const config = JSON.parse(content);
+    return config.upstream?.analysis?.suggestions || [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Format suggestions for human-readable output.
+ * @param {Array} suggestions - Suggestions array
+ * @returns {string}
+ */
+function formatSuggestions(suggestions) {
+  if (!suggestions || suggestions.length === 0) {
+    return '';
+  }
+
+  const lightbulbEmoji = '\uD83D\uDCA1'; // lightbulb
+  const warningEmoji = '\u26A0\uFE0F';   // warning
+  const infoEmoji = '\u2139\uFE0F';      // info
+
+  let text = `\n${lightbulbEmoji} Suggestions (${suggestions.length}):\n`;
+
+  for (const suggestion of suggestions) {
+    const severityIcon = suggestion.severity === SUGGESTION_SEVERITY.HIGH ? warningEmoji :
+                         suggestion.severity === SUGGESTION_SEVERITY.MEDIUM ? infoEmoji : '';
+
+    text += `\n  ${suggestion.id}. ${severityIcon} ${suggestion.what}\n`;
+    text += `     Why: ${suggestion.why}\n`;
+    text += `     Fix: ${suggestion.fix}\n`;
+    text += `     Apply: ${suggestion.apply_command}\n`;
+  }
+
+  return text;
+}
+
+/**
+ * Apply a specific suggestion by ID.
+ *
+ * @param {string} cwd - Working directory
+ * @param {number} suggestionId - Suggestion ID to apply
+ * @returns {{ applied: boolean, suggestion_id: number, action_taken?: string, reason?: string }}
+ */
+function applySuggestion(cwd, suggestionId) {
+  const suggestions = loadSuggestions(cwd);
+
+  // Find suggestion by ID
+  const suggestion = suggestions.find(s => s.id === suggestionId);
+
+  if (!suggestion) {
+    return {
+      applied: false,
+      suggestion_id: suggestionId,
+      reason: `Suggestion ${suggestionId} not found. Run 'gsd-tools upstream status' to regenerate suggestions.`,
+    };
+  }
+
+  // Check if already applied
+  if (suggestion.applied) {
+    return {
+      applied: false,
+      suggestion_id: suggestionId,
+      reason: `Suggestion ${suggestionId} was already applied.`,
+    };
+  }
+
+  let actionTaken = '';
+
+  // Apply based on suggestion type
+  switch (suggestion.type) {
+    case SUGGESTION_TYPES.RENAME_CONFLICT: {
+      // Get fork's diff for the original file and apply to renamed location
+      const meta = suggestion._meta;
+      if (!meta || !meta.from || !meta.to) {
+        return {
+          applied: false,
+          suggestion_id: suggestionId,
+          reason: 'Missing metadata for rename suggestion.',
+        };
+      }
+
+      // Get fork changes to original file
+      const diffResult = execGit(cwd, ['diff', `${DEFAULT_REMOTE_NAME}/${DEFAULT_BRANCH}..HEAD`, '--', meta.from]);
+
+      if (!diffResult.success || !diffResult.stdout) {
+        return {
+          applied: false,
+          suggestion_id: suggestionId,
+          reason: `Could not get fork changes for ${meta.from}.`,
+        };
+      }
+
+      // Create patch file adjusted for new path
+      const patchContent = diffResult.stdout.replace(
+        new RegExp(`a/${meta.from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'g'),
+        `a/${meta.to}`
+      ).replace(
+        new RegExp(`b/${meta.from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'g'),
+        `b/${meta.to}`
+      );
+
+      // Write patch to temp file
+      const patchPath = path.join(cwd, '.planning', `suggestion-${suggestionId}.patch`);
+      try {
+        fs.writeFileSync(patchPath, patchContent, 'utf-8');
+        actionTaken = `Created patch file: ${patchPath}\n` +
+          `Review and apply with: git apply ${patchPath}\n` +
+          `Or manually copy changes from ${meta.from} to ${meta.to}`;
+      } catch (err) {
+        return {
+          applied: false,
+          suggestion_id: suggestionId,
+          reason: `Failed to create patch file: ${err.message}`,
+        };
+      }
+      break;
+    }
+
+    case SUGGESTION_TYPES.SIGNATURE_CONFLICT: {
+      // Show conflict details and create recommended changes
+      const meta = suggestion._meta;
+      actionTaken = `Function signature change detected:\n` +
+        `  Current (fork): ${meta.ours}\n` +
+        `  Upstream: ${meta.theirs}\n` +
+        `  File: ${suggestion.file}, around line ${meta.line}\n\n` +
+        `Manual action required:\n` +
+        `1. Review the signature change\n` +
+        `2. Update any call sites in your fork that use ${meta.function_name}()\n` +
+        `3. Test thoroughly after merge`;
+      break;
+    }
+
+    case SUGGESTION_TYPES.IMPORT_CONFLICT: {
+      // List files that need import updates
+      const meta = suggestion._meta;
+      actionTaken = `Export changes in ${meta.module}.\n` +
+        `Files that may need updates:\n`;
+      for (const file of meta.importing_files) {
+        actionTaken += `  - ${file}\n`;
+      }
+      actionTaken += `\nManual action required:\n` +
+        `1. Review export changes in ${meta.module}\n` +
+        `2. Update imports in listed files as needed`;
+      break;
+    }
+
+    default:
+      return {
+        applied: false,
+        suggestion_id: suggestionId,
+        reason: `Unknown suggestion type: ${suggestion.type}`,
+      };
+  }
+
+  // Mark suggestion as applied in config
+  const configPath = path.join(cwd, CONFIG_PATH);
+  try {
+    const content = fs.readFileSync(configPath, 'utf-8');
+    const config = JSON.parse(content);
+
+    if (config.upstream?.analysis?.suggestions) {
+      const idx = config.upstream.analysis.suggestions.findIndex(s => s.id === suggestionId);
+      if (idx !== -1) {
+        config.upstream.analysis.suggestions[idx].applied = true;
+        config.upstream.analysis.suggestions[idx].applied_at = new Date().toISOString();
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+      }
+    }
+  } catch {
+    // Config update failed - not critical
+  }
+
+  return {
+    applied: true,
+    suggestion_id: suggestionId,
+    action_taken: actionTaken,
+  };
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -3285,6 +3790,8 @@ module.exports = {
   BINARY_CATEGORIES,
   SYNC_EVENTS,
   BACKUP_BRANCH_PREFIX,
+  SUGGESTION_SEVERITY,
+  SUGGESTION_TYPES,
 
   // Helper functions
   execGit,
@@ -3341,6 +3848,13 @@ module.exports = {
   acknowledgeConflict,
   checkAllAcknowledged,
   clearAnalysisState,
+
+  // Semantic similarity and suggestion functions
+  detectSemanticSimilarities,
+  generateSuggestions,
+  loadSuggestions,
+  formatSuggestions,
+  applySuggestion,
 
   // Commands
   cmdUpstreamConfigure,
