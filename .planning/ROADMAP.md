@@ -57,7 +57,12 @@ Plans:
   2. Failed merge automatically rolls back to pre-merge state with clear message
   3. User can abort an incomplete sync and restore to clean state
   4. Sync events (fetch, merge, abort) are logged in STATE.md with timestamps
-**Plans:** TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 7-01-PLAN.md — Add STATE.md sync history logging and backup branch helpers
+- [ ] 7-02-PLAN.md — Add merge command with pre-merge safety and atomic rollback
+- [ ] 7-03-PLAN.md — Add abort command for incomplete sync restoration
 
 ### Phase 8: Interactive & Integration
 **Goal**: Provide interactive exploration and integrate with existing GSD features
@@ -91,7 +96,7 @@ Phases execute in numeric order: 5 -> 6 -> 7 -> 8 -> 9
 |-------|----------------|--------|-----------|
 | 5. Core Infrastructure | 0/4 | In progress | - |
 | 6. Analysis | 0/? | Not started | - |
-| 7. Merge Operations | 0/? | Not started | - |
+| 7. Merge Operations | 0/3 | Planned | - |
 | 8. Interactive & Integration | 0/? | Not started | - |
 | 9. Documentation | 0/? | Not started | - |
 
