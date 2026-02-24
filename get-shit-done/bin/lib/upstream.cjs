@@ -1755,6 +1755,262 @@ function clearAnalysisState(cwd) {
   }
 }
 
+// ─── Resolve Command ──────────────────────────────────────────────────────────
+
+/**
+ * Sync detected conflicts with stored analysis state.
+ * Updates config.json if conflicts have changed.
+ * @param {string} cwd - Working directory
+ * @param {{ renames: Array, deletes: Array }} detected - Detected conflicts
+ * @param {{ structural_conflicts: Array }} analysisState - Current analysis state
+ * @returns {boolean} - True if state was updated
+ */
+function syncAnalysisState(cwd, detected, analysisState) {
+  // Build list of current conflicts
+  const currentConflicts = [];
+
+  for (const rename of detected.renames) {
+    if (rename.fork_modified) {
+      // Check if already exists in stored state
+      const existing = analysisState.structural_conflicts?.find(
+        c => c.type === 'rename' && c.from === rename.from
+      );
+      currentConflicts.push({
+        type: 'rename',
+        from: rename.from,
+        to: rename.to,
+        similarity: rename.similarity,
+        acknowledged: existing?.acknowledged || false,
+        acknowledged_at: existing?.acknowledged_at || null,
+      });
+    }
+  }
+
+  for (const del of detected.deletes) {
+    const existing = analysisState.structural_conflicts?.find(
+      c => c.type === 'delete' && c.file === del.file
+    );
+    currentConflicts.push({
+      type: 'delete',
+      file: del.file,
+      acknowledged: existing?.acknowledged || false,
+      acknowledged_at: existing?.acknowledged_at || null,
+    });
+  }
+
+  // Check if state needs updating
+  const storedCount = analysisState.structural_conflicts?.length || 0;
+  const currentCount = currentConflicts.length;
+
+  // Update if counts differ or we have no stored conflicts but do have current ones
+  if (storedCount !== currentCount || (storedCount === 0 && currentCount > 0)) {
+    analysisState.structural_conflicts = currentConflicts;
+    analysisState.analyzed_at = new Date().toISOString();
+    saveAnalysisState(cwd, analysisState);
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Resolve structural conflicts command.
+ * Supports list/acknowledge/status modes for rename/delete conflict resolution workflow.
+ *
+ * @param {string} cwd - Working directory
+ * @param {object} options - { list?: boolean, acknowledge?: number, acknowledge_all?: boolean, status?: boolean }
+ * @param {function} output - Output callback
+ * @param {function} error - Error callback
+ * @param {boolean} raw - Output as JSON
+ */
+function cmdUpstreamResolve(cwd, options, output, error, raw) {
+  const upstreamConfig = loadUpstreamConfig(cwd);
+
+  // Check if upstream is configured
+  if (!upstreamConfig.url) {
+    error('Upstream not configured. Run: gsd-tools upstream configure <url>');
+    return;
+  }
+
+  // Emojis for output
+  const warningEmoji = '\u26A0\uFE0F';   // warning
+  const checkEmoji = '\u2705';          // check mark
+  const arrowEmoji = '\u2192';          // right arrow
+
+  // Detect current structural conflicts
+  const detected = detectStructuralConflicts(cwd);
+
+  // Load existing analysis state
+  let analysisState = loadAnalysisState(cwd);
+
+  // Sync detected conflicts with analysis state
+  // If detection results changed, update the stored state
+  const needsUpdate = syncAnalysisState(cwd, detected, analysisState);
+  if (needsUpdate) {
+    analysisState = loadAnalysisState(cwd);
+  }
+
+  // Handle status mode
+  if (options?.status) {
+    const readiness = checkAllAcknowledged(cwd);
+
+    if (raw) {
+      output({
+        ready_to_merge: readiness.ready_to_merge,
+        total_conflicts: readiness.total_conflicts,
+        acknowledged: readiness.acknowledged,
+        pending: readiness.pending,
+      }, true);
+    } else {
+      let text = '';
+      if (readiness.ready_to_merge) {
+        text = `${checkEmoji} All structural conflicts acknowledged. Ready to merge.`;
+      } else {
+        text = `${warningEmoji} Not ready to merge.\n\n`;
+        text += `Conflicts: ${readiness.acknowledged}/${readiness.total_conflicts} acknowledged\n`;
+        if (readiness.pending.length > 0) {
+          text += '\nPending:\n';
+          for (const item of readiness.pending) {
+            text += `  ${item}\n`;
+          }
+        }
+      }
+      output({ ...readiness }, false, text.trim());
+    }
+    return;
+  }
+
+  // Handle acknowledge mode
+  if (options?.acknowledge !== undefined || options?.acknowledge_all) {
+    const result = acknowledgeConflict(
+      cwd,
+      options.acknowledge_all ? null : options.acknowledge,
+      !!options.acknowledge_all
+    );
+
+    if (raw) {
+      output(result, true);
+    } else {
+      let text = result.message;
+      if (result.success && result.acknowledged > 0) {
+        // Show remaining count
+        const readiness = checkAllAcknowledged(cwd);
+        const remaining = readiness.total_conflicts - readiness.acknowledged;
+        if (remaining > 0) {
+          text += `\n${remaining} conflict(s) remaining.`;
+        } else {
+          text += `\n${checkEmoji} All conflicts acknowledged. Ready to merge.`;
+        }
+      }
+      output(result, false, text);
+    }
+    return;
+  }
+
+  // Default: list mode
+  // Handle zero state - no structural conflicts
+  if (!detected.has_conflicts) {
+    const result = {
+      conflicts: [],
+      ready_to_merge: true,
+      pending_count: 0,
+    };
+
+    if (raw) {
+      output(result, true);
+    } else {
+      output(result, false, `${checkEmoji} No structural conflicts detected.`);
+    }
+    return;
+  }
+
+  // Build conflicts list with acknowledgment status
+  const conflicts = [];
+  let id = 1;
+
+  // Add renames (only those where fork has modifications)
+  for (const rename of detected.renames) {
+    if (rename.fork_modified) {
+      const storedConflict = analysisState.structural_conflicts?.find(
+        c => c.type === 'rename' && c.from === rename.from
+      );
+      conflicts.push({
+        id: id++,
+        type: 'rename',
+        from: rename.from,
+        to: rename.to,
+        similarity: rename.similarity,
+        modifications: rename.modifications,
+        acknowledged: !!storedConflict?.acknowledged,
+        acknowledged_at: storedConflict?.acknowledged_at || null,
+      });
+    }
+  }
+
+  // Add deletes
+  for (const del of detected.deletes) {
+    const storedConflict = analysisState.structural_conflicts?.find(
+      c => c.type === 'delete' && c.file === del.file
+    );
+    conflicts.push({
+      id: id++,
+      type: 'delete',
+      file: del.file,
+      modifications: del.modifications,
+      acknowledged: !!storedConflict?.acknowledged,
+      acknowledged_at: storedConflict?.acknowledged_at || null,
+    });
+  }
+
+  const pendingCount = conflicts.filter(c => !c.acknowledged).length;
+  const result = {
+    conflicts,
+    ready_to_merge: pendingCount === 0,
+    pending_count: pendingCount,
+  };
+
+  if (raw) {
+    output(result, true);
+    return;
+  }
+
+  // Format human-readable output per CONTEXT.md
+  let text = `${warningEmoji} STRUCTURAL CONFLICTS \u2014 Must resolve before merge\n\n`;
+
+  for (const conflict of conflicts) {
+    const status = conflict.acknowledged ? `[${checkEmoji} acknowledged]` : '[pending]';
+
+    if (conflict.type === 'rename') {
+      text += `${conflict.id}. POSSIBLE RENAME (${conflict.similarity}% similar)\n`;
+      text += `   ${conflict.from} ${arrowEmoji} ${conflict.to}\n`;
+      if (conflict.modifications) {
+        const mods = conflict.modifications;
+        const changes = [];
+        if (mods.added_lines > 0) changes.push(`+${mods.added_lines} lines`);
+        if (mods.removed_lines > 0) changes.push(`-${mods.removed_lines} lines`);
+        if (changes.length > 0) {
+          text += `   Your changes: ${changes.join(', ')}\n`;
+        }
+      }
+      text += `   Status: ${status}\n\n`;
+    } else {
+      text += `${conflict.id}. DELETE CONFLICT\n`;
+      text += `   Upstream deleted: ${conflict.file}\n`;
+      if (conflict.modifications) {
+        const mods = conflict.modifications;
+        text += `   Your version has modifications: +${mods.added_lines} lines, -${mods.removed_lines} lines\n`;
+      }
+      text += `   Action required: Acknowledge loss or extract changes first\n`;
+      text += `   Status: ${status}\n\n`;
+    }
+  }
+
+  text += `Run /gsd:sync-resolve --ack <N> to acknowledge conflict N\n`;
+  text += `Run /gsd:sync-resolve --ack-all to acknowledge all`;
+
+  output(result, false, text.trim());
+}
+
 // ─── Notification Functions ───────────────────────────────────────────────────
 
 /**
@@ -1928,6 +2184,7 @@ module.exports = {
   cmdUpstreamStatus,
   cmdUpstreamLog,
   cmdUpstreamPreview,
+  cmdUpstreamResolve,
 
   // Notification functions
   checkUpstreamNotification,
