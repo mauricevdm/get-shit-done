@@ -54,6 +54,8 @@
 | Conventional commit grouping | Group by COMMIT_TYPES order; fallback to flat list | 2026-02-24 |
 | Cache-first notification check | Fast response for session start, no blocking network calls | 2026-02-24 |
 | Silent network errors for notifications | Session start should never fail due to network issues | 2026-02-24 |
+| Quote shell arguments in execGit | Prevent shell interpretation of special chars (%, |, etc.) | 2026-02-24 |
+| Human-readable output mode | Support text > 20 chars as human-readable in output function | 2026-02-24 |
 
 ### Implementation Notes
 
