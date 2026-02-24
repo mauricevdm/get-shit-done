@@ -66,6 +66,7 @@
  *
  * Sync Operations:
  *   sync explore <hash>               Interactive exploration of upstream commit
+ *   sync apply-suggestion <id>        Apply a refactoring suggestion
  *
  * Roadmap Operations:
  *   roadmap get-phase <phase>          Extract phase section from ROADMAP.md
@@ -5210,8 +5211,51 @@ async function main() {
         // Start interactive session
         output({ exploring: fullHash, total_commits: commits.length }, raw, `Exploring commit ${fullHash}...`);
         interactiveModule.createExploreSession(cwd, fullHash, commitHashes);
+      } else if (subcommand === 'apply-suggestion') {
+        const idArg = args[2];
+
+        // Handle help flag
+        if (idArg === '--help' || idArg === '-h') {
+          console.log('Usage: sync apply-suggestion <id>');
+          console.log('');
+          console.log('Apply a refactoring suggestion to prepare for merge.');
+          console.log('');
+          console.log('Arguments:');
+          console.log('  <id>  Suggestion ID (shown in upstream status output)');
+          console.log('');
+          console.log('Example:');
+          console.log('  gsd-tools sync apply-suggestion 1');
+          break;
+        }
+
+        // Validate ID provided
+        if (!idArg) {
+          error('Suggestion ID required. Usage: sync apply-suggestion <id>');
+          break;
+        }
+
+        const suggestionId = parseInt(idArg, 10);
+        if (isNaN(suggestionId) || suggestionId < 1) {
+          error('Invalid suggestion ID. ID must be a positive number.');
+          break;
+        }
+
+        // Call applySuggestion from upstream module
+        const result = upstreamModule.applySuggestion(cwd, suggestionId);
+
+        if (raw) {
+          output(result, raw);
+        } else {
+          if (result.applied) {
+            console.log(`Applied suggestion ${result.suggestion_id}:`);
+            console.log('');
+            console.log(result.action_taken);
+          } else {
+            error(`Failed to apply suggestion: ${result.reason}`);
+          }
+        }
       } else {
-        error('Unknown sync subcommand. Available: explore');
+        error('Unknown sync subcommand. Available: explore, apply-suggestion');
       }
       break;
     }
