@@ -80,7 +80,13 @@ Plans:
   3. Post-merge verification tests run automatically to confirm custom features work
   4. User receives warning when attempting sync with active worktrees
   5. Health check reports incomplete/stalled sync operations
-**Plans:** TBD
+**Plans:** 4 plans
+
+Plans:
+- [ ] 8-01-PLAN.md — Interactive exploration mode (sync explore command with readline REPL)
+- [ ] 8-02-PLAN.md — Refactoring suggestions (semantic similarity detection + apply-suggestion)
+- [ ] 8-03-PLAN.md — Post-merge verification (test discovery + rollback prompt)
+- [ ] 8-04-PLAN.md — Worktree integration (sync guard + health check extension)
 
 ### Phase 9: Documentation
 **Goal**: Document upstream sync features for users and developers
@@ -103,7 +109,7 @@ Phases execute in numeric order: 5 -> 6 -> 7 -> 8 -> 9
 | 5. Core Infrastructure | 4/4 | Complete | 2026-02-24 |
 | 6. Analysis | 4/4 | Complete | 2026-02-24 |
 | 7. Merge Operations | 0/3 | Ready | - |
-| 8. Interactive & Integration | 0/? | Not started | - |
+| 8. Interactive & Integration | 0/4 | Planned | - |
 | 9. Documentation | 0/? | Not started | - |
 
 ---
