@@ -3,12 +3,30 @@
   "worktrees": {
     "phase-99": {
       "phase_number": "99",
-      "phase_name": "verify",
-      "branch": "test-branch",
-      "path": "/tmp/verify-test",
-      "created": "2026-02-20T17:14:01.515Z",
+      "phase_name": "test-merge",
+      "branch": "phase-99-test-merge",
+      "path": "/Users/mauricevandermerwe/Projects/get-shit-done/.worktrees/get-shit-done-phase-99",
+      "created": "2026-02-22T19:25:30.673Z",
       "status": "removed",
-      "removed": "2026-02-20T17:14:01.600Z"
+      "removed": "2026-02-22T19:26:50.143Z"
+    },
+    "phase-1": {
+      "phase_number": "1",
+      "phase_name": "foundation",
+      "branch": "phase-1-foundation",
+      "path": "/Users/mauricevandermerwe/Projects/get-shit-done/.worktrees/get-shit-done-phase-1",
+      "created": "2026-02-20T17:20:54.179Z",
+      "status": "removed",
+      "removed": "2026-02-20T17:21:14.706Z"
+    },
+    "phase-05": {
+      "phase_number": "05",
+      "phase_name": "core-infrastructure",
+      "branch": "phase-05-core-infrastructure",
+      "path": "/Users/mauricevandermerwe/Projects/get-shit-done/.worktrees/get-shit-done-phase-05",
+      "created": "2026-02-24T10:20:50.055Z",
+      "status": "removed",
+      "removed": "2026-02-24T10:59:48.285Z"
     }
   },
   "locks": {}
