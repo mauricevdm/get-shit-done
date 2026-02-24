@@ -64,6 +64,10 @@
  *   upstream abort [--restore branch]  Abort sync or restore from backup branch
  *   upstream merge                     Merge upstream changes (creates backup branch)
  *
+ * Sync Operations:
+ *   sync explore <hash>               Interactive exploration of upstream commit
+ *   sync apply-suggestion <id>        Apply a refactoring suggestion
+ *
  * Roadmap Operations:
  *   roadmap get-phase <phase>          Extract phase section from ROADMAP.md
  *   roadmap analyze                    Full roadmap parse with disk status
@@ -161,6 +165,7 @@ const { execSync } = require('child_process');
 const worktreeModule = require('./lib/worktree.cjs');
 const healthModule = require('./lib/health.cjs');
 const upstreamModule = require('./lib/upstream.cjs');
+const interactiveModule = require('./lib/interactive.cjs');
 
 // ─── Model Profile Table ─────────────────────────────────────────────────────
 
@@ -5150,6 +5155,107 @@ async function main() {
         upstreamModule.cmdUpstreamMerge(cwd, {}, output, error, raw);
       } else {
         error('Unknown upstream subcommand. Available: configure, fetch, status, log, notification, analyze, preview, resolve, abort, merge');
+      }
+      break;
+    }
+
+    case 'sync': {
+      const subcommand = args[1];
+      if (subcommand === 'explore') {
+        const hash = args[2];
+
+        // Handle help flag
+        if (hash === '--help' || hash === '-h') {
+          console.log('Usage: sync explore <hash>');
+          console.log('');
+          console.log('Start interactive exploration of an upstream commit.');
+          console.log('');
+          console.log('Arguments:');
+          console.log('  <hash>  Commit hash from upstream (run upstream status to see available commits)');
+          console.log('');
+          console.log('Commands in explore mode:');
+          console.log('  files      Show files changed in this commit');
+          console.log('  diff       Show diff (or diff <filename> for specific file)');
+          console.log('  conflicts  Show predicted conflicts');
+          console.log('  related    Show related commits (touch same files)');
+          console.log('  next       Navigate to next commit in range');
+          console.log('  prev       Navigate to previous commit');
+          console.log('  ask <q>    Ask Claude a question about this commit');
+          console.log('  quit       Exit exploration');
+          break;
+        }
+
+        // Validate hash provided
+        if (!hash) {
+          error('Commit hash required. Usage: sync explore <hash>');
+          break;
+        }
+
+        // Get list of upstream commits for navigation
+        const commits = upstreamModule.getCommitsWithFiles(cwd);
+
+        if (commits.length === 0) {
+          error('No upstream commits to explore. Run upstream fetch first.');
+          break;
+        }
+
+        // Verify hash exists in commit list
+        const commitHashes = commits.map(c => c.hash);
+        const fullHash = commitHashes.find(h => h.startsWith(hash));
+
+        if (!fullHash) {
+          error(`Commit ${hash} not found in upstream commits. Run upstream status to see available commits.`);
+          break;
+        }
+
+        // Start interactive session
+        output({ exploring: fullHash, total_commits: commits.length }, raw, `Exploring commit ${fullHash}...`);
+        interactiveModule.createExploreSession(cwd, fullHash, commitHashes);
+      } else if (subcommand === 'apply-suggestion') {
+        const idArg = args[2];
+
+        // Handle help flag
+        if (idArg === '--help' || idArg === '-h') {
+          console.log('Usage: sync apply-suggestion <id>');
+          console.log('');
+          console.log('Apply a refactoring suggestion to prepare for merge.');
+          console.log('');
+          console.log('Arguments:');
+          console.log('  <id>  Suggestion ID (shown in upstream status output)');
+          console.log('');
+          console.log('Example:');
+          console.log('  gsd-tools sync apply-suggestion 1');
+          break;
+        }
+
+        // Validate ID provided
+        if (!idArg) {
+          error('Suggestion ID required. Usage: sync apply-suggestion <id>');
+          break;
+        }
+
+        const suggestionId = parseInt(idArg, 10);
+        if (isNaN(suggestionId) || suggestionId < 1) {
+          error('Invalid suggestion ID. ID must be a positive number.');
+          break;
+        }
+
+        // Call applySuggestion from upstream module
+        const result = upstreamModule.applySuggestion(cwd, suggestionId);
+
+        if (raw) {
+          output(result, raw);
+        } else {
+          if (result.applied) {
+            console.log(`Applied suggestion ${result.suggestion_id}:`);
+            console.log('');
+            console.log(result.action_taken);
+          } else {
+            error(`Failed to apply suggestion: ${result.reason}`);
+          }
+        }
+      } else {
+        error('Unknown sync subcommand. Available: explore, apply-suggestion');
       }
       break;
     }

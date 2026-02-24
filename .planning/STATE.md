@@ -4,17 +4,17 @@
 
 **Core Value:** Enable GSD fork maintainers to stay current with upstream while preserving custom enhancements through intelligent sync tooling.
 
-**Current Focus:** Phase 7 - Merge Operations
+**Current Focus:** Phase 8 - Interactive & Integration
 
 ## Current Position
 
-**Phase:** 7 - Merge Operations
-**Plan:** 7-02 complete
-**Status:** Ready to plan
-**Last activity:** 2026-02-24 — Completed plan 7-02 (merge command with safety and rollback)
+**Phase:** 8 - Interactive & Integration
+**Plan:** 8-03 complete
+**Status:** Milestone complete
+**Last activity:** 2026-02-24 — Completed plan 8-03 (post-merge verification)
 
 ```
-[##################..] 90% - Phase 7 plan 02 complete
+[####################] 100% - Phase 8 plan 03 complete
 ```
 
 **Phases:**
@@ -29,9 +29,9 @@
 
 | Metric | Value |
 |--------|-------|
-| Plans completed (v1.1) | 12 |
+| Plans completed (v1.1) | 16 |
 | Plans failed (v1.1) | 0 |
-| Current streak | 12 |
+| Current streak | 16 |
 | v1.0 plans completed | 11 |
 
 ## Accumulated Context
@@ -71,6 +71,17 @@
 | MERGE_HEAD detection for abort | Use git's MERGE_HEAD file to detect in-progress merge | 2026-02-24 |
 | Automatic rollback on merge failure | Any merge failure triggers immediate rollback to pre-merge state | 2026-02-24 |
 | Pre-merge validation sequence | 4 checks before merge: upstream configured, clean tree, no merge in progress, commits available | 2026-02-24 |
+| Linear chronological navigation | Explore REPL uses next/prev for commit navigation instead of jump-to-hash | 2026-02-24 |
+| Smart diff preview threshold | 50 lines - summary for larger diffs, full diff otherwise | 2026-02-24 |
+| AI escape hatch via ask command | Format structured prompt for Claude analysis of commits | 2026-02-24 |
+| Hard block on sync with active worktrees | Protects in-progress work; force flag available | 2026-02-24 |
+| Divergence severity levels | none (0), low (<=5), medium (<=20), high (>20) total commits | 2026-02-24 |
+| Health check sync integration | Detect stale analysis, SHA mismatch, orphaned state | 2026-02-24 |
+| Suggestion severity levels | high=renames, medium=signatures, low=imports | 2026-02-24 |
+| Patch file approach for renames | Generate patch files for review rather than auto-apply | 2026-02-24 |
+| Config-backed suggestion storage | Store suggestions in config.json for persistence | 2026-02-24 |
+| Three-tier test discovery | Naming conventions first, then import analysis; coverage data optional | 2026-02-24 |
+| Non-TTY defaults to keep changes | Allows batch/CI use without hanging on prompt | 2026-02-24 |
 
 ### Roadmap Evolution
 
@@ -111,6 +122,10 @@
 - [x] Execute plan 7-01 (sync history and backup branch helpers)
 - [x] Execute plan 7-02 (merge command with safety and rollback)
 - [x] Execute plan 7-03 (abort command for sync cancellation)
+- [x] Execute plan 8-01 (interactive exploration module)
+- [x] Execute plan 8-02 (refactoring suggestions)
+- [x] Execute plan 8-03 (post-merge verification)
+- [x] Execute plan 8-04 (worktree sync guards and health checks)
 
 ### Blockers
 
@@ -119,11 +134,11 @@ None currently.
 ## Session Continuity
 
 **Last Session:** 2026-02-24
-**Context:** Completed plan 7-02 - added merge command (cmdUpstreamMerge, rollbackMerge) with pre-merge validation, automatic backup branch creation, and rollback on failure.
+**Context:** Completed plan 8-03 - added test-discovery.cjs module with three-tier discovery (naming conventions, import analysis) and integrated runPostMergeVerification into cmdUpstreamMerge with rollback prompt on test failure.
 
 **To Resume:**
-1. Continue executing Phase 7 (Merge Operations) plans
-2. Next: plan 7-04 (merge finalization)
+1. Phase 8 (Interactive & Integration) complete
+2. Next: Phase 9 - Documentation
 
 
 ### Sync History
@@ -133,4 +148,4 @@ None currently.
 
 ---
 *State initialized: 2026-02-23*
-*Last updated: 2026-02-24 (Phase 7 plan 02 complete)*
+*Last updated: 2026-02-24 (Phase 8 plan 03 complete)*
