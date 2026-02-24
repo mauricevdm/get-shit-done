@@ -16,6 +16,19 @@ const DEFAULT_BRANCH = 'main';
 const CACHE_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
 const CONFIG_PATH = '.planning/config.json';
 
+// Risk scoring weights for conflict assessment
+const RISK_FACTORS = {
+  fileTypeWeights: {
+    'md': 0.5,    // Markdown - easy to resolve
+    'json': 0.7,  // Config - moderate
+    'cjs': 1.0,   // Code - standard
+    'js': 1.0,
+    'ts': 1.2,    // TypeScript - slightly harder
+  },
+  smallConflict: 10,   // lines
+  mediumConflict: 50,  // lines
+};
+
 // Conventional commit type mappings with emoji and labels
 const COMMIT_TYPES = {
   feat:     { emoji: '\u2728', label: 'Features' },           // sparkles
@@ -696,6 +709,242 @@ function cmdUpstreamLog(cwd, options, output, error, raw) {
   }
 }
 
+// ─── Git Version and Conflict Preview Functions ───────────────────────────────
+
+/**
+ * Check Git version and determine if modern features are supported.
+ * @param {string} cwd - Working directory
+ * @returns {{ major: number, minor: number, supportsWriteTree: boolean }}
+ */
+function checkGitVersion(cwd) {
+  const result = execGit(cwd, ['--version']);
+  if (!result.success || !result.stdout) {
+    return { major: 0, minor: 0, supportsWriteTree: false };
+  }
+
+  const match = result.stdout.match(/git version (\d+)\.(\d+)/);
+  if (!match) {
+    return { major: 0, minor: 0, supportsWriteTree: false };
+  }
+
+  const major = parseInt(match[1], 10);
+  const minor = parseInt(match[2], 10);
+
+  // merge-tree --write-tree requires Git 2.38+
+  const supportsWriteTree = major > 2 || (major === 2 && minor >= 38);
+
+  return { major, minor, supportsWriteTree };
+}
+
+/**
+ * Get conflict preview using git merge-tree --write-tree.
+ * @param {string} cwd - Working directory
+ * @returns {{ conflicts: Array, clean?: boolean, tree_oid?: string, error?: string, message?: string }}
+ */
+function getConflictPreview(cwd) {
+  const remoteName = DEFAULT_REMOTE_NAME;
+  const branch = DEFAULT_BRANCH;
+
+  // Check Git version first
+  const gitVersion = checkGitVersion(cwd);
+  if (!gitVersion.supportsWriteTree) {
+    return {
+      conflicts: [],
+      error: 'git_version',
+      message: `Git 2.38+ required for conflict preview (found ${gitVersion.major}.${gitVersion.minor})`,
+    };
+  }
+
+  // Run git merge-tree --write-tree
+  // Exit 0 = clean merge, non-zero = conflicts
+  const result = execGit(cwd, ['merge-tree', '--write-tree', 'HEAD', `${remoteName}/${branch}`]);
+
+  // Parse the output - first line is always the tree OID
+  if (!result.stdout) {
+    // If stdout is empty but command succeeded, it's clean
+    if (result.success) {
+      return { conflicts: [], clean: true };
+    }
+    return {
+      conflicts: [],
+      error: 'merge_tree_failed',
+      message: result.stderr || 'merge-tree command failed',
+    };
+  }
+
+  const lines = result.stdout.split('\n');
+  const treeOid = lines[0];
+
+  // If only one line (the OID) or command succeeded with clean merge
+  if (lines.length <= 2 && result.success) {
+    return { conflicts: [], clean: true, tree_oid: treeOid };
+  }
+
+  // Parse conflict output - look for CONFLICT markers and file paths
+  const conflicts = [];
+  let currentFile = null;
+
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+
+    // CONFLICT (content): Merge conflict in <file>
+    const conflictMatch = line.match(/^CONFLICT \([^)]+\): (?:Merge conflict in |.*?)\s*(.+)$/);
+    if (conflictMatch) {
+      const file = conflictMatch[1].trim();
+      if (file && !conflicts.some(c => c.file === file)) {
+        conflicts.push({ file, regions: [] });
+      }
+      continue;
+    }
+
+    // Auto-merging <file> (indicates file was processed)
+    const autoMergeMatch = line.match(/^Auto-merging (.+)$/);
+    if (autoMergeMatch) {
+      // Just tracking, not necessarily a conflict
+      continue;
+    }
+  }
+
+  return {
+    conflicts,
+    clean: conflicts.length === 0,
+    tree_oid: treeOid,
+  };
+}
+
+/**
+ * Get detailed conflict regions for specific files.
+ * Parses conflict markers from merge-tree output.
+ * @param {string} cwd - Working directory
+ * @param {string[]} files - List of conflicted files
+ * @returns {Array<{ file: string, regions: Array<{ start_line: number, end_line: number, ours: string, theirs: string }> }>}
+ */
+function getDetailedConflicts(cwd, files) {
+  const remoteName = DEFAULT_REMOTE_NAME;
+  const branch = DEFAULT_BRANCH;
+  const results = [];
+
+  for (const file of files) {
+    // Use git show to get the merged content with conflict markers
+    // Create a temporary merge to see the conflict markers
+    const result = execGit(cwd, [
+      'merge-tree',
+      '--write-tree',
+      '-z',
+      'HEAD',
+      `${remoteName}/${branch}`
+    ]);
+
+    // For detailed conflicts, we parse the conflict markers
+    // The merge-tree output with -z gives us detailed info
+    const regions = parseConflictRegions(result.stdout, file);
+
+    results.push({ file, regions });
+  }
+
+  return results;
+}
+
+/**
+ * Parse conflict regions from merge output.
+ * @param {string} content - Content potentially containing conflict markers
+ * @param {string} file - File path to match
+ * @returns {Array<{ start_line: number, end_line: number, ours: string, theirs: string }>}
+ */
+function parseConflictRegions(content, file) {
+  const regions = [];
+
+  if (!content) return regions;
+
+  // Look for conflict markers pattern
+  const conflictPattern = /<<<<<<< [^\n]+\n([\s\S]*?)=======\n([\s\S]*?)>>>>>>> [^\n]+/g;
+
+  let match;
+  let lineNum = 1;
+
+  while ((match = conflictPattern.exec(content)) !== null) {
+    const ours = match[1].trimEnd();
+    const theirs = match[2].trimEnd();
+
+    // Count lines to approximate position
+    const beforeConflict = content.slice(0, match.index);
+    const startLine = (beforeConflict.match(/\n/g) || []).length + 1;
+    const conflictLines = match[0].split('\n').length;
+
+    regions.push({
+      start_line: startLine,
+      end_line: startLine + conflictLines - 1,
+      ours,
+      theirs,
+    });
+  }
+
+  return regions;
+}
+
+/**
+ * Score the risk/difficulty of resolving a conflict.
+ * @param {{ file: string, regions: Array }} conflict
+ * @returns {'easy'|'moderate'|'hard'}
+ */
+function scoreConflictRisk(conflict) {
+  const ext = conflict.file.split('.').pop().toLowerCase();
+  const baseWeight = RISK_FACTORS.fileTypeWeights[ext] || 1.0;
+
+  let score = 0;
+
+  // Factor 1: Number of conflict regions in file
+  score += (conflict.regions?.length || 1) * 0.5;
+
+  // Factor 2: Size of conflicts (approximate from regions)
+  let totalLines = 0;
+  if (conflict.regions) {
+    for (const region of conflict.regions) {
+      const oursLines = (region.ours?.split('\n') || []).length;
+      const theirsLines = (region.theirs?.split('\n') || []).length;
+      totalLines += Math.max(oursLines, theirsLines);
+    }
+  }
+
+  if (totalLines > RISK_FACTORS.mediumConflict) {
+    score += 2;
+  } else if (totalLines > RISK_FACTORS.smallConflict) {
+    score += 1;
+  }
+
+  // Factor 3: File importance (GSD-specific)
+  if (conflict.file.includes('STATE.md')) {
+    score += 2; // Critical state file
+  }
+  if (conflict.file.includes('lib/')) {
+    score += 0.5; // Core code
+  }
+
+  // Apply file type weight
+  score *= baseWeight;
+
+  // Map score to risk level
+  if (score < 2) return 'easy';
+  if (score < 5) return 'moderate';
+  return 'hard';
+}
+
+/**
+ * Calculate overall risk from all conflicts.
+ * @param {Array<{ file: string, regions: Array }>} conflicts
+ * @returns {'EASY'|'MODERATE'|'HARD'|null}
+ */
+function calculateOverallRisk(conflicts) {
+  if (!conflicts || conflicts.length === 0) return null;
+
+  const scores = conflicts.map(scoreConflictRisk);
+
+  if (scores.some(s => s === 'hard')) return 'HARD';
+  if (scores.some(s => s === 'moderate')) return 'MODERATE';
+  return 'EASY';
+}
+
 // ─── Notification Functions ───────────────────────────────────────────────────
 
 /**
@@ -827,6 +1076,7 @@ module.exports = {
   CONFIG_PATH,
   COMMIT_TYPES,
   CONVENTIONAL_PATTERN,
+  RISK_FACTORS,
 
   // Helper functions
   execGit,
@@ -837,6 +1087,13 @@ module.exports = {
   parseConventionalCommit,
   groupCommitsByType,
   truncateSubject,
+
+  // Conflict preview functions
+  checkGitVersion,
+  getConflictPreview,
+  getDetailedConflicts,
+  scoreConflictRisk,
+  calculateOverallRisk,
 
   // Commands
   cmdUpstreamConfigure,
