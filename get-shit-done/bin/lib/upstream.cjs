@@ -1192,6 +1192,220 @@ function detectStructuralConflicts(cwd) {
   };
 }
 
+// ─── Preview Command ──────────────────────────────────────────────────────────
+
+/**
+ * Generate a context-aware suggestion based on conflict details.
+ * @param {{ file: string, regions: Array }} conflict
+ * @returns {string}
+ */
+function generateConflictSuggestion(conflict) {
+  const file = conflict.file;
+  const regionCount = conflict.regions?.length || 1;
+
+  // GSD-specific suggestions
+  if (file.includes('STATE.md')) {
+    return 'STATE.md conflicts typically involve progress tracking. Review carefully and consider keeping fork-specific data.';
+  }
+
+  if (file.includes('config.json') && file.includes('.planning')) {
+    return 'Configuration conflict. Merge upstream settings but preserve fork-specific overrides.';
+  }
+
+  if (file.includes('lib/')) {
+    if (regionCount === 1) {
+      return 'Single conflict region in core module. Review changes carefully before accepting either version.';
+    }
+    return `Multiple conflict regions (${regionCount}). Consider reviewing each section individually.`;
+  }
+
+  // Generic suggestions based on file type
+  const ext = file.split('.').pop().toLowerCase();
+
+  if (ext === 'md') {
+    return 'Documentation conflict. Usually safe to merge, keeping both sets of changes if applicable.';
+  }
+
+  if (ext === 'json') {
+    return 'JSON conflict. Validate syntax after resolving. Consider using a JSON merge tool.';
+  }
+
+  // Default suggestion
+  if (regionCount === 1) {
+    return 'Single conflict region - straightforward to resolve manually.';
+  }
+
+  return `${regionCount} conflict regions. Review each section and test thoroughly after merge.`;
+}
+
+/**
+ * Preview upstream merge conflicts and binary changes.
+ * Provides risk scoring and context-aware suggestions.
+ *
+ * @param {string} cwd - Working directory
+ * @param {object} options - { branch?: string }
+ * @param {function} output - Output callback
+ * @param {function} error - Error callback
+ * @param {boolean} raw - Output as JSON
+ */
+function cmdUpstreamPreview(cwd, options, output, error, raw) {
+  const upstreamConfig = loadUpstreamConfig(cwd);
+  const remoteName = DEFAULT_REMOTE_NAME;
+  const branch = options?.branch || DEFAULT_BRANCH;
+
+  // Check if upstream is configured
+  if (!upstreamConfig.url) {
+    error('Upstream not configured. Run: gsd-tools upstream configure <url>');
+    return;
+  }
+
+  // Get conflict preview
+  const conflictResult = getConflictPreview(cwd);
+
+  // Handle Git version error
+  if (conflictResult.error === 'git_version') {
+    output({
+      error: 'git_version',
+      message: conflictResult.message,
+      suggestion: 'Upgrade to Git 2.38+ for conflict preview support.',
+    }, raw, conflictResult.message);
+    return;
+  }
+
+  // Get binary changes
+  const binaries = detectBinaryChanges(cwd);
+
+  // Get current upstream SHA for state tracking
+  const shaResult = execGit(cwd, ['rev-parse', `${remoteName}/${branch}`]);
+  const currentUpstreamSha = shaResult.success ? shaResult.stdout : null;
+
+  // Get detailed conflicts for files that have them
+  let detailedConflicts = conflictResult.conflicts;
+  if (conflictResult.conflicts.length > 0) {
+    const files = conflictResult.conflicts.map(c => c.file);
+    detailedConflicts = getDetailedConflicts(cwd, files);
+
+    // Merge the original conflict info with detailed regions
+    detailedConflicts = conflictResult.conflicts.map(c => {
+      const detailed = detailedConflicts.find(d => d.file === c.file);
+      return {
+        ...c,
+        regions: detailed?.regions || c.regions || [],
+      };
+    });
+  }
+
+  // Calculate overall risk
+  const overallRisk = calculateOverallRisk(detailedConflicts);
+
+  // Determine if acknowledgment is required (dangerous binaries or review binaries)
+  const requiresAcknowledgment = binaries.dangerous.length > 0 || binaries.review.length > 0;
+
+  // Save analysis state to config.json
+  upstreamConfig.analysis = {
+    analyzed_at: new Date().toISOString(),
+    analyzed_sha: currentUpstreamSha,
+    conflict_count: detailedConflicts.length,
+    binary_acknowledged: false,
+    binary_files: [...binaries.safe, ...binaries.review, ...binaries.dangerous],
+  };
+  saveUpstreamConfig(cwd, upstreamConfig);
+
+  // Build result object
+  const result = {
+    risk: overallRisk,
+    conflicts: detailedConflicts.map(c => ({
+      file: c.file,
+      regions: c.regions,
+      risk: scoreConflictRisk(c),
+      suggestion: generateConflictSuggestion(c),
+    })),
+    binaries: {
+      safe: binaries.safe,
+      review: binaries.review,
+      dangerous: binaries.dangerous,
+    },
+    analyzed_sha: currentUpstreamSha,
+    requires_acknowledgment: requiresAcknowledgment,
+    clean: conflictResult.clean && binaries.total === 0,
+  };
+
+  if (raw) {
+    output(result, true);
+    return;
+  }
+
+  // Format human-readable output
+  const magnifierEmoji = '\uD83D\uDD0D'; // magnifying glass
+  const lightbulbEmoji = '\uD83D\uDCA1'; // light bulb
+  const checkEmoji = '\u2705';           // green check
+
+  let text = '';
+
+  // Handle clean merge case
+  if (conflictResult.clean && binaries.total === 0) {
+    text = `${checkEmoji} Merge is clean - no conflicts expected\n`;
+    text += '\nNo binary file changes detected.';
+    output(result, false, text);
+    return;
+  }
+
+  // Show conflict preview if conflicts exist
+  if (detailedConflicts.length > 0) {
+    text += `${magnifierEmoji} Conflict Preview (Merge Risk: ${overallRisk})\n\n`;
+
+    for (const conflict of detailedConflicts) {
+      const risk = scoreConflictRisk(conflict);
+      const regionCount = conflict.regions?.length || 0;
+      text += `${conflict.file} \u2014 ${regionCount || '?'} conflict region${regionCount === 1 ? '' : 's'} [${risk}]\n`;
+
+      // Show conflict markers if available
+      if (conflict.regions && conflict.regions.length > 0) {
+        for (const region of conflict.regions.slice(0, 2)) { // Limit to first 2 regions
+          text += '<<<<<<< HEAD (fork)\n';
+          if (region.ours) {
+            text += `  ${region.ours.split('\n').slice(0, 5).join('\n  ')}\n`;
+            if (region.ours.split('\n').length > 5) {
+              text += '  ...\n';
+            }
+          }
+          text += '=======\n';
+          if (region.theirs) {
+            text += `  ${region.theirs.split('\n').slice(0, 5).join('\n  ')}\n`;
+            if (region.theirs.split('\n').length > 5) {
+              text += '  ...\n';
+            }
+          }
+          text += '>>>>>>> upstream\n\n';
+        }
+
+        if (conflict.regions.length > 2) {
+          text += `  ... and ${conflict.regions.length - 2} more conflict regions\n\n`;
+        }
+      }
+
+      // Add suggestion
+      const suggestion = generateConflictSuggestion(conflict);
+      text += `${lightbulbEmoji} Suggestion: ${suggestion}\n\n`;
+    }
+  } else if (!conflictResult.clean) {
+    // Conflict preview failed but not clean
+    text += `${magnifierEmoji} Conflict Preview\n\n`;
+    text += 'Unable to determine specific conflicts. Run a test merge to see details.\n\n';
+  }
+
+  // Show binary changes if any
+  if (binaries.total > 0) {
+    text += '\n' + formatBinaryChanges(binaries);
+
+    if (requiresAcknowledgment) {
+      text += '\n\nAcknowledge binary changes before merge? (y/n)';
+    }
+  }
+
+  output(result, false, text.trim());
+}
+
 // ─── Notification Functions ───────────────────────────────────────────────────
 
 /**
@@ -1355,6 +1569,7 @@ module.exports = {
   cmdUpstreamFetch,
   cmdUpstreamStatus,
   cmdUpstreamLog,
+  cmdUpstreamPreview,
 
   // Notification functions
   checkUpstreamNotification,
