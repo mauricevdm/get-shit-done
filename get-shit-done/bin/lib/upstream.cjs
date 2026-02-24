@@ -235,6 +235,97 @@ function getCommitsWithFiles(cwd) {
   return commits;
 }
 
+/**
+ * Group commits by top-level directory they affect.
+ * Multi-touch commits appear under each affected directory.
+ * Implements adaptive depth: if >50% of commits cluster in one directory AND >5 commits total,
+ * go one level deeper for that directory (capped at 2 levels).
+ *
+ * @param {{ hash: string, files: string[] }[]} commits - Commits with file lists
+ * @returns {Map<string, Set<object>>} - Map of directory to Set of commits
+ */
+function groupCommitsByDirectory(commits) {
+  const groups = new Map(); // directory -> Set of commits
+
+  // First pass: group by top-level directory
+  for (const commit of commits) {
+    if (!commit.files || commit.files.length === 0) {
+      // Commits with no files go to root
+      const dir = '/';
+      if (!groups.has(dir)) groups.set(dir, new Set());
+      groups.get(dir).add(commit);
+      continue;
+    }
+
+    for (const file of commit.files) {
+      // Get top-level directory
+      const dir = file.includes('/') ? file.split('/')[0] + '/' : '/';
+      if (!groups.has(dir)) groups.set(dir, new Set());
+      groups.get(dir).add(commit);
+    }
+  }
+
+  // Second pass: adaptive depth for clustered directories
+  // If >50% of commits in one dir AND >5 total commits, go deeper
+  if (commits.length > 5) {
+    const dirsToRefine = [];
+
+    for (const [dir, commitSet] of groups) {
+      if (dir === '/') continue; // Don't refine root
+      if (commitSet.size > commits.length * 0.5) {
+        dirsToRefine.push(dir);
+      }
+    }
+
+    for (const dir of dirsToRefine) {
+      refineGroupDepth(commits, groups, dir);
+    }
+  }
+
+  return groups;
+}
+
+/**
+ * Refine a directory group to one level deeper.
+ * Called by groupCommitsByDirectory for clustered directories.
+ *
+ * @param {{ hash: string, files: string[] }[]} commits - All commits
+ * @param {Map<string, Set<object>>} groups - Current groups (modified in place)
+ * @param {string} dir - Directory to refine (e.g., "commands/")
+ */
+function refineGroupDepth(commits, groups, dir) {
+  const dirWithoutSlash = dir.slice(0, -1); // Remove trailing slash
+  const subGroups = new Map();
+
+  // Find all commits that were in this directory
+  const commitsInDir = groups.get(dir);
+  if (!commitsInDir) return;
+
+  // Regroup at next depth level
+  for (const commit of commitsInDir) {
+    for (const file of commit.files || []) {
+      if (!file.startsWith(dirWithoutSlash + '/')) continue;
+
+      // Get path after top directory
+      const rest = file.slice(dirWithoutSlash.length + 1);
+      const subDir = rest.includes('/')
+        ? `${dirWithoutSlash}/${rest.split('/')[0]}/`
+        : dir; // Keep at current level if no subdirectory
+
+      if (!subGroups.has(subDir)) subGroups.set(subDir, new Set());
+      subGroups.get(subDir).add(commit);
+    }
+  }
+
+  // Only apply refinement if it actually splits the group
+  if (subGroups.size > 1) {
+    groups.delete(dir);
+    for (const [subDir, subCommits] of subGroups) {
+      groups.set(subDir, subCommits);
+    }
+  }
+}
+
 // ─── Configure Command ────────────────────────────────────────────────────────
 
 /**
@@ -1804,6 +1895,7 @@ module.exports = {
   saveUpstreamConfig,
   getRemotes,
   getCommitsWithFiles,
+  groupCommitsByDirectory,
   formatDate,
   parseConventionalCommit,
   groupCommitsByType,
