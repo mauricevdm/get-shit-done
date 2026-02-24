@@ -1085,14 +1085,17 @@ function cmdUpstreamAbort(cwd, options, output, error, raw) {
     if (abortResult.success) {
       appendSyncHistoryEntry(cwd, SYNC_EVENTS.ABORT, 'Aborted in-progress merge');
 
+      const result = {
+        aborted: true,
+        reason: 'merge_in_progress',
+        message: 'Aborted in-progress merge. Working tree restored to pre-merge state.',
+      };
+      const humanOutput = 'Aborted in-progress merge.\nWorking tree restored to pre-merge state.';
+
       if (raw) {
-        output({
-          aborted: true,
-          reason: 'merge_in_progress',
-          message: 'Aborted in-progress merge. Working tree restored to pre-merge state.',
-        }, raw);
+        output(result, raw);
       } else {
-        output('Aborted in-progress merge.\nWorking tree restored to pre-merge state.');
+        output(result, false, humanOutput);
       }
       return;
     } else {
@@ -1105,14 +1108,17 @@ function cmdUpstreamAbort(cwd, options, output, error, raw) {
   const backupBranches = listBackupBranches(cwd);
 
   if (backupBranches.length === 0) {
+    const result = {
+      aborted: false,
+      reason: 'nothing_to_abort',
+      message: 'No sync in progress and no backup branches found.',
+    };
+    const humanOutput = 'No sync in progress and no backup branches found.\nNothing to abort.';
+
     if (raw) {
-      output({
-        aborted: false,
-        reason: 'nothing_to_abort',
-        message: 'No sync in progress and no backup branches found.',
-      }, raw);
+      output(result, raw);
     } else {
-      output('No sync in progress and no backup branches found.\nNothing to abort.');
+      output(result, false, humanOutput);
     }
     return;
   }
@@ -1142,16 +1148,19 @@ function cmdUpstreamAbort(cwd, options, output, error, raw) {
       appendSyncHistoryEntry(cwd, SYNC_EVENTS.ABORT,
         `Restored to ${targetBranch.name} (${newHead.slice(0, 7)})`);
 
+      const result = {
+        aborted: true,
+        restored: true,
+        restored_from: targetBranch.name,
+        restored_to: newHead.slice(0, 7),
+        message: `Restored to backup branch: ${targetBranch.name}`,
+      };
+      const humanOutput = `Restored to backup branch: ${targetBranch.name}\nCurrent HEAD: ${newHead.slice(0, 7)}`;
+
       if (raw) {
-        output({
-          aborted: true,
-          restored: true,
-          restored_from: targetBranch.name,
-          restored_to: newHead.slice(0, 7),
-          message: `Restored to backup branch: ${targetBranch.name}`,
-        }, raw);
+        output(result, raw);
       } else {
-        output(`Restored to backup branch: ${targetBranch.name}\nCurrent HEAD: ${newHead.slice(0, 7)}`);
+        output(result, false, humanOutput);
       }
       return;
     } else {
@@ -1163,36 +1172,40 @@ function cmdUpstreamAbort(cwd, options, output, error, raw) {
   // Step 4: No --restore flag - show available backup branches
   const latestBackup = backupBranches[0];
 
+  const result = {
+    aborted: false,
+    restore_available: true,
+    backup_branches: backupBranches.slice(0, 5),
+    latest_backup: latestBackup.name,
+    suggestion: `To restore: gsd-tools upstream abort --restore ${latestBackup.name}`,
+    message: `No sync in progress. ${backupBranches.length} backup branch(es) available.`,
+  };
+
+  // Human-readable output with backup branch list
+  const lines = [
+    'No sync in progress.',
+    '',
+    'Available backup branches (most recent first):',
+  ];
+
+  backupBranches.slice(0, 5).forEach((branch, i) => {
+    lines.push(`  ${i + 1}. ${branch.name} (${branch.date})`);
+  });
+
+  if (backupBranches.length > 5) {
+    lines.push(`  ... and ${backupBranches.length - 5} more`);
+  }
+
+  lines.push('');
+  lines.push('To restore from a backup:');
+  lines.push(`  gsd-tools upstream abort --restore ${latestBackup.name}`);
+
+  const humanOutput = lines.join('\n');
+
   if (raw) {
-    output({
-      aborted: false,
-      restore_available: true,
-      backup_branches: backupBranches.slice(0, 5),
-      latest_backup: latestBackup.name,
-      suggestion: `To restore: gsd-tools upstream abort --restore ${latestBackup.name}`,
-      message: `No sync in progress. ${backupBranches.length} backup branch(es) available.`,
-    }, raw);
+    output(result, raw);
   } else {
-    // Human-readable output with backup branch list
-    const lines = [
-      'No sync in progress.',
-      '',
-      'Available backup branches (most recent first):',
-    ];
-
-    backupBranches.slice(0, 5).forEach((branch, i) => {
-      lines.push(`  ${i + 1}. ${branch.name} (${branch.date})`);
-    });
-
-    if (backupBranches.length > 5) {
-      lines.push(`  ... and ${backupBranches.length - 5} more`);
-    }
-
-    lines.push('');
-    lines.push('To restore from a backup:');
-    lines.push(`  gsd-tools upstream abort --restore ${latestBackup.name}`);
-
-    output(lines.join('\n'));
+    output(result, false, humanOutput);
   }
 }
 
