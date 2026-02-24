@@ -2896,6 +2896,260 @@ function cmdUpstreamResolve(cwd, options, output, error, raw) {
   output(result, false, text.trim());
 }
 
+// ─── Worktree Sync Guards ──────────────────────────────────────────────────────
+
+/**
+ * Calculate divergence severity based on commits behind and ahead.
+ * @param {number} behind - Commits behind main
+ * @param {number} ahead - Commits ahead of main
+ * @returns {'none'|'low'|'medium'|'high'}
+ */
+function calculateDivergenceSeverity(behind, ahead) {
+  const total = behind + ahead;
+  if (total === 0) return 'none';
+  if (total <= 5) return 'low';
+  if (total <= 20) return 'medium';
+  return 'high';
+}
+
+/**
+ * Analyze divergence for all active worktrees.
+ * Calculates commits behind/ahead main and potential conflicts with upstream.
+ *
+ * @param {string} cwd - Working directory
+ * @param {object} registry - Worktree registry object
+ * @returns {Array<{ key: string, branch: string, path: string, merge_base: string, commits_behind: number, commits_ahead: number, divergence_severity: string, would_conflict_with_upstream: boolean, recommendation: string }>}
+ */
+function analyzeWorktreeDivergence(cwd, registry) {
+  const analysis = [];
+
+  if (!registry || !registry.worktrees) {
+    return analysis;
+  }
+
+  const remoteName = DEFAULT_REMOTE_NAME;
+  const mainBranch = DEFAULT_BRANCH;
+
+  for (const [key, entry] of Object.entries(registry.worktrees)) {
+    // Skip non-active worktrees
+    if (entry.status !== 'active') continue;
+    if (!entry.branch) continue;
+
+    const worktreeAnalysis = {
+      key,
+      branch: entry.branch,
+      path: entry.path,
+      merge_base: null,
+      commits_behind: 0,
+      commits_ahead: 0,
+      divergence_severity: 'none',
+      would_conflict_with_upstream: false,
+      recommendation: 'none',
+    };
+
+    // Find merge-base between worktree branch and main
+    const mergeBaseResult = execGit(cwd, ['merge-base', mainBranch, entry.branch]);
+    if (mergeBaseResult.success && mergeBaseResult.stdout) {
+      worktreeAnalysis.merge_base = mergeBaseResult.stdout.trim().slice(0, 7);
+    }
+
+    // Count commits behind main
+    const behindResult = execGit(cwd, ['rev-list', '--count', `${entry.branch}..${mainBranch}`]);
+    if (behindResult.success && behindResult.stdout) {
+      worktreeAnalysis.commits_behind = parseInt(behindResult.stdout.trim(), 10) || 0;
+    }
+
+    // Count commits ahead of main
+    const aheadResult = execGit(cwd, ['rev-list', '--count', `${mainBranch}..${entry.branch}`]);
+    if (aheadResult.success && aheadResult.stdout) {
+      worktreeAnalysis.commits_ahead = parseInt(aheadResult.stdout.trim(), 10) || 0;
+    }
+
+    // Calculate severity
+    worktreeAnalysis.divergence_severity = calculateDivergenceSeverity(
+      worktreeAnalysis.commits_behind,
+      worktreeAnalysis.commits_ahead
+    );
+
+    // Check if worktree would conflict with upstream (using merge-tree)
+    const gitVersion = checkGitVersion(cwd);
+    if (gitVersion.supportsWriteTree) {
+      const mergeTreeResult = execGit(cwd, [
+        'merge-tree', '--write-tree', entry.branch, `${remoteName}/${mainBranch}`
+      ]);
+      // Non-zero exit or CONFLICT in output means conflicts
+      if (!mergeTreeResult.success ||
+          (mergeTreeResult.stdout && mergeTreeResult.stdout.includes('CONFLICT'))) {
+        worktreeAnalysis.would_conflict_with_upstream = true;
+      }
+    }
+
+    // Generate recommendation
+    if (worktreeAnalysis.would_conflict_with_upstream) {
+      worktreeAnalysis.recommendation = 'rebase';
+    } else if (worktreeAnalysis.commits_behind > 10) {
+      worktreeAnalysis.recommendation = 'merge';
+    } else if (worktreeAnalysis.commits_behind > 0) {
+      worktreeAnalysis.recommendation = 'review';
+    } else {
+      worktreeAnalysis.recommendation = 'none';
+    }
+
+    analysis.push(worktreeAnalysis);
+  }
+
+  return analysis;
+}
+
+/**
+ * Check worktrees before sync operation.
+ * Blocks sync when active (in_progress) worktrees exist unless --force is used.
+ * Per CONTEXT.md: Hard block with impact analysis.
+ *
+ * @param {string} cwd - Working directory
+ * @param {object} options - { force?: boolean }
+ * @returns {{ blocked: boolean, forced?: boolean, warning?: string, worktrees?: Array, impact?: object, force_available?: boolean }}
+ */
+function checkWorktreesBeforeSync(cwd, options = {}) {
+  const registry = loadRegistry(cwd);
+
+  // No registry = no worktrees = not blocked
+  if (!registry || !registry.worktrees) {
+    return { blocked: false };
+  }
+
+  // Find worktrees with active status (in_progress plans)
+  const activeWorktrees = [];
+  for (const [key, entry] of Object.entries(registry.worktrees)) {
+    if (entry.status === 'active') {
+      activeWorktrees.push({
+        key,
+        branch: entry.branch,
+        path: entry.path,
+        phase: entry.phase_number,
+        phase_name: entry.phase_name,
+      });
+    }
+  }
+
+  // No active worktrees = not blocked
+  if (activeWorktrees.length === 0) {
+    return { blocked: false };
+  }
+
+  // Force flag bypasses block with warning
+  if (options.force) {
+    return {
+      blocked: false,
+      forced: true,
+      warning: `Sync forced despite ${activeWorktrees.length} active worktree(s). These worktrees may need rebasing after sync: ${activeWorktrees.map(w => w.key).join(', ')}`,
+    };
+  }
+
+  // Analyze impact on active worktrees
+  const divergenceAnalysis = analyzeWorktreeDivergence(cwd, registry);
+
+  // Filter to only active worktrees and add divergence info
+  const impactedWorktrees = activeWorktrees.map(wt => {
+    const divergence = divergenceAnalysis.find(d => d.key === wt.key);
+    return {
+      ...wt,
+      commits_behind: divergence?.commits_behind || 0,
+      commits_ahead: divergence?.commits_ahead || 0,
+      divergence_severity: divergence?.divergence_severity || 'unknown',
+      would_conflict: divergence?.would_conflict_with_upstream || false,
+      recommendation: divergence?.recommendation || 'unknown',
+    };
+  });
+
+  // Build impact summary
+  const impact = {
+    total_active: activeWorktrees.length,
+    would_conflict: impactedWorktrees.filter(w => w.would_conflict).length,
+    needs_rebase: impactedWorktrees.filter(w => w.recommendation === 'rebase').length,
+    needs_merge: impactedWorktrees.filter(w => w.recommendation === 'merge').length,
+  };
+
+  return {
+    blocked: true,
+    worktrees: impactedWorktrees,
+    impact,
+    force_available: true,
+  };
+}
+
+/**
+ * Detect worktree conflicts after a merge completes.
+ * Returns list of worktrees that would have conflicts with new main.
+ *
+ * @param {string} cwd - Working directory
+ * @returns {Array<{ key: string, branch: string, path: string, has_conflicts: boolean, recommendation: string }>}
+ */
+function detectWorktreeConflictsPostMerge(cwd) {
+  const registry = loadRegistry(cwd);
+  const results = [];
+
+  if (!registry || !registry.worktrees) {
+    return results;
+  }
+
+  const gitVersion = checkGitVersion(cwd);
+
+  for (const [key, entry] of Object.entries(registry.worktrees)) {
+    // Skip non-active worktrees
+    if (entry.status !== 'active') continue;
+    if (!entry.branch) continue;
+
+    const result = {
+      key,
+      branch: entry.branch,
+      path: entry.path,
+      has_conflicts: false,
+      recommendation: 'none',
+    };
+
+    // Use merge-tree to check for conflicts with new main
+    if (gitVersion.supportsWriteTree) {
+      const mergeTreeResult = execGit(cwd, [
+        'merge-tree', '--write-tree', entry.branch, DEFAULT_BRANCH
+      ]);
+
+      if (!mergeTreeResult.success ||
+          (mergeTreeResult.stdout && mergeTreeResult.stdout.includes('CONFLICT'))) {
+        result.has_conflicts = true;
+        result.recommendation = 'rebase';
+      } else {
+        // Check if worktree is behind
+        const behindResult = execGit(cwd, ['rev-list', '--count', `${entry.branch}..${DEFAULT_BRANCH}`]);
+        const commitsBehind = behindResult.success ? parseInt(behindResult.stdout.trim(), 10) : 0;
+
+        if (commitsBehind > 10) {
+          result.recommendation = 'merge';
+        } else if (commitsBehind > 0) {
+          result.recommendation = 'review';
+        }
+      }
+    } else {
+      // Fallback without merge-tree: check if significantly behind
+      const behindResult = execGit(cwd, ['rev-list', '--count', `${entry.branch}..${DEFAULT_BRANCH}`]);
+      const commitsBehind = behindResult.success ? parseInt(behindResult.stdout.trim(), 10) : 0;
+
+      if (commitsBehind > 10) {
+        result.recommendation = 'merge';
+      } else if (commitsBehind > 0) {
+        result.recommendation = 'review';
+      }
+    }
+
+    // Only include worktrees that need attention
+    if (result.has_conflicts || result.recommendation !== 'none') {
+      results.push(result);
+    }
+  }
+
+  return results;
+}
+
 // ─── Notification Functions ───────────────────────────────────────────────────
 
 /**
@@ -3074,6 +3328,12 @@ module.exports = {
 
   // Structural conflict detection
   detectStructuralConflicts,
+
+  // Worktree sync guards
+  calculateDivergenceSeverity,
+  analyzeWorktreeDivergence,
+  checkWorktreesBeforeSync,
+  detectWorktreeConflictsPostMerge,
 
   // Acknowledgment state management
   loadAnalysisState,
