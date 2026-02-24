@@ -62,6 +62,7 @@
 | Analysis state in config.json | Store analyzed_sha, conflict_count, binary_acknowledged | 2026-02-24 |
 | 90% rename similarity threshold | Reduces false positives from unrelated files | 2026-02-24 |
 | Fork modification check | Only flag conflicts where fork actually changed the file | 2026-02-24 |
+| Adaptive directory depth | Refine at >50% clustering AND >5 total commits; cap at 2 levels | 2026-02-24 |
 
 ### Implementation Notes
 
@@ -101,7 +102,7 @@ None currently.
 ## Session Continuity
 
 **Last Session:** 2026-02-24
-**Context:** Completed plan 6-03 - added structural conflict detection with acknowledgment workflow. detectStructuralConflicts identifies renames (M90 threshold) and delete conflicts where fork has modifications. cmdUpstreamResolve supports list/acknowledge/status modes. Acknowledgment state persists in config.json.
+**Context:** Completed plan 6-01 - added commit grouping functions to upstream.cjs. getCommitsWithFiles retrieves commits with affected files, groupCommitsByDirectory groups by top-level directory with adaptive depth, cmdUpstreamAnalyze supports directory grouping (default) and feature grouping (--by-feature flag).
 
 **To Resume:**
 1. Execute plan 6-04 (CLI routing for analysis commands)
