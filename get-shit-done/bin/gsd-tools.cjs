@@ -134,7 +134,9 @@
  *   state update-progress              Recalculate progress bar
  *   state add-decision --summary "..."  Add decision to STATE.md
  *     [--phase N] [--rationale "..."]
+ *     [--summary-file path] [--rationale-file path]
  *   state add-blocker --text "..."     Add blocker
+ *     [--text-file path]
  *   state resolve-blocker --text "..." Remove blocker
  *   state record-session               Update session continuity
  *     --stopped-at "..."
@@ -160,12 +162,27 @@ const path = require('path');
 const os = require('os');
 const { execSync } = require('child_process');
 
-// ─── Worktree Isolation Modules ───────────────────────────────────────────────
+// ─── Worktree Isolation Modules (fork additions) ──────────────────────────────
 
 const worktreeModule = require('./lib/worktree.cjs');
 const healthModule = require('./lib/health.cjs');
 const upstreamModule = require('./lib/upstream.cjs');
 const interactiveModule = require('./lib/interactive.cjs');
+const testDiscoveryModule = require('./lib/test-discovery.cjs');
+
+// ─── Upstream Domain Modules ──────────────────────────────────────────────────
+
+const { error: coreError } = require('./lib/core.cjs');
+const state = require('./lib/state.cjs');
+const phase = require('./lib/phase.cjs');
+const roadmap = require('./lib/roadmap.cjs');
+const verify = require('./lib/verify.cjs');
+const config = require('./lib/config.cjs');
+const template = require('./lib/template.cjs');
+const milestone = require('./lib/milestone.cjs');
+const commands = require('./lib/commands.cjs');
+const init = require('./lib/init.cjs');
+const frontmatter = require('./lib/frontmatter.cjs');
 
 // ─── Model Profile Table ─────────────────────────────────────────────────────
 
@@ -4961,24 +4978,44 @@ function cmdInitProgress(cwd, raw) {
 
 async function main() {
   const args = process.argv.slice(2);
+
+  // Optional cwd override for sandboxed subagents running outside project root.
+  let cwd = process.cwd();
+  const cwdEqArg = args.find(arg => arg.startsWith('--cwd='));
+  const cwdIdx = args.indexOf('--cwd');
+  if (cwdEqArg) {
+    const value = cwdEqArg.slice('--cwd='.length).trim();
+    if (!value) error('Missing value for --cwd');
+    args.splice(args.indexOf(cwdEqArg), 1);
+    cwd = path.resolve(value);
+  } else if (cwdIdx !== -1) {
+    const value = args[cwdIdx + 1];
+    if (!value || value.startsWith('--')) error('Missing value for --cwd');
+    args.splice(cwdIdx, 2);
+    cwd = path.resolve(value);
+  }
+
+  if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+    error(`Invalid --cwd: ${cwd}`);
+  }
+
   const rawIndex = args.indexOf('--raw');
   const raw = rawIndex !== -1;
   if (rawIndex !== -1) args.splice(rawIndex, 1);
 
   const command = args[0];
-  const cwd = process.cwd();
 
   if (!command) {
-    error('Usage: gsd-tools <command> [args] [--raw]\nCommands: state, resolve-model, find-phase, commit, verify-summary, verify, frontmatter, template, generate-slug, current-timestamp, list-todos, verify-path-exists, config-ensure-section, init');
+    error('Usage: gsd-tools <command> [args] [--raw] [--cwd <path>]\nCommands: state, resolve-model, find-phase, commit, verify-summary, verify, frontmatter, template, generate-slug, current-timestamp, list-todos, verify-path-exists, config-ensure-section, init');
   }
 
   switch (command) {
     case 'state': {
       const subcommand = args[1];
       if (subcommand === 'update') {
-        cmdStateUpdate(cwd, args[2], args[3]);
+        state.cmdStateUpdate(cwd, args[2], args[3]);
       } else if (subcommand === 'get') {
-        cmdStateGet(cwd, args[2], raw);
+        state.cmdStateGet(cwd, args[2], raw);
       } else if (subcommand === 'patch') {
         const patches = {};
         for (let i = 2; i < args.length; i += 2) {
@@ -4988,16 +5025,16 @@ async function main() {
             patches[key] = value;
           }
         }
-        cmdStatePatch(cwd, patches, raw);
+        state.cmdStatePatch(cwd, patches, raw);
       } else if (subcommand === 'advance-plan') {
-        cmdStateAdvancePlan(cwd, raw);
+        state.cmdStateAdvancePlan(cwd, raw);
       } else if (subcommand === 'record-metric') {
         const phaseIdx = args.indexOf('--phase');
         const planIdx = args.indexOf('--plan');
         const durationIdx = args.indexOf('--duration');
         const tasksIdx = args.indexOf('--tasks');
         const filesIdx = args.indexOf('--files');
-        cmdStateRecordMetric(cwd, {
+        state.cmdStateRecordMetric(cwd, {
           phase: phaseIdx !== -1 ? args[phaseIdx + 1] : null,
           plan: planIdx !== -1 ? args[planIdx + 1] : null,
           duration: durationIdx !== -1 ? args[durationIdx + 1] : null,
@@ -5005,42 +5042,50 @@ async function main() {
           files: filesIdx !== -1 ? args[filesIdx + 1] : null,
         }, raw);
       } else if (subcommand === 'update-progress') {
-        cmdStateUpdateProgress(cwd, raw);
+        state.cmdStateUpdateProgress(cwd, raw);
       } else if (subcommand === 'add-decision') {
         const phaseIdx = args.indexOf('--phase');
         const summaryIdx = args.indexOf('--summary');
+        const summaryFileIdx = args.indexOf('--summary-file');
         const rationaleIdx = args.indexOf('--rationale');
-        cmdStateAddDecision(cwd, {
+        const rationaleFileIdx = args.indexOf('--rationale-file');
+        state.cmdStateAddDecision(cwd, {
           phase: phaseIdx !== -1 ? args[phaseIdx + 1] : null,
           summary: summaryIdx !== -1 ? args[summaryIdx + 1] : null,
+          summary_file: summaryFileIdx !== -1 ? args[summaryFileIdx + 1] : null,
           rationale: rationaleIdx !== -1 ? args[rationaleIdx + 1] : '',
+          rationale_file: rationaleFileIdx !== -1 ? args[rationaleFileIdx + 1] : null,
         }, raw);
       } else if (subcommand === 'add-blocker') {
         const textIdx = args.indexOf('--text');
-        cmdStateAddBlocker(cwd, textIdx !== -1 ? args[textIdx + 1] : null, raw);
+        const textFileIdx = args.indexOf('--text-file');
+        state.cmdStateAddBlocker(cwd, {
+          text: textIdx !== -1 ? args[textIdx + 1] : null,
+          text_file: textFileIdx !== -1 ? args[textFileIdx + 1] : null,
+        }, raw);
       } else if (subcommand === 'resolve-blocker') {
         const textIdx = args.indexOf('--text');
-        cmdStateResolveBlocker(cwd, textIdx !== -1 ? args[textIdx + 1] : null, raw);
+        state.cmdStateResolveBlocker(cwd, textIdx !== -1 ? args[textIdx + 1] : null, raw);
       } else if (subcommand === 'record-session') {
         const stoppedIdx = args.indexOf('--stopped-at');
         const resumeIdx = args.indexOf('--resume-file');
-        cmdStateRecordSession(cwd, {
+        state.cmdStateRecordSession(cwd, {
           stopped_at: stoppedIdx !== -1 ? args[stoppedIdx + 1] : null,
           resume_file: resumeIdx !== -1 ? args[resumeIdx + 1] : 'None',
         }, raw);
       } else {
-        cmdStateLoad(cwd, raw);
+        state.cmdStateLoad(cwd, raw);
       }
       break;
     }
 
     case 'resolve-model': {
-      cmdResolveModel(cwd, args[1], raw);
+      commands.cmdResolveModel(cwd, args[1], raw);
       break;
     }
 
     case 'find-phase': {
-      cmdFindPhase(cwd, args[1], raw);
+      phase.cmdFindPhase(cwd, args[1], raw);
       break;
     }
 
@@ -5266,7 +5311,7 @@ async function main() {
       // Parse --files flag (collect args after --files, stopping at other flags)
       const filesIndex = args.indexOf('--files');
       const files = filesIndex !== -1 ? args.slice(filesIndex + 1).filter(a => !a.startsWith('--')) : [];
-      cmdCommit(cwd, message, files, raw, amend);
+      commands.cmdCommit(cwd, message, files, raw, amend);
       break;
     }
 
@@ -5274,14 +5319,14 @@ async function main() {
       const summaryPath = args[1];
       const countIndex = args.indexOf('--check-count');
       const checkCount = countIndex !== -1 ? parseInt(args[countIndex + 1], 10) : 2;
-      cmdVerifySummary(cwd, summaryPath, checkCount, raw);
+      verify.cmdVerifySummary(cwd, summaryPath, checkCount, raw);
       break;
     }
 
     case 'template': {
       const subcommand = args[1];
       if (subcommand === 'select') {
-        cmdTemplateSelect(cwd, args[2], raw);
+        template.cmdTemplateSelect(cwd, args[2], raw);
       } else if (subcommand === 'fill') {
         const templateType = args[2];
         const phaseIdx = args.indexOf('--phase');
@@ -5290,7 +5335,7 @@ async function main() {
         const typeIdx = args.indexOf('--type');
         const waveIdx = args.indexOf('--wave');
         const fieldsIdx = args.indexOf('--fields');
-        cmdTemplateFill(cwd, templateType, {
+        template.cmdTemplateFill(cwd, templateType, {
           phase: phaseIdx !== -1 ? args[phaseIdx + 1] : null,
           plan: planIdx !== -1 ? args[planIdx + 1] : null,
           name: nameIdx !== -1 ? args[nameIdx + 1] : null,
@@ -5309,17 +5354,17 @@ async function main() {
       const file = args[2];
       if (subcommand === 'get') {
         const fieldIdx = args.indexOf('--field');
-        cmdFrontmatterGet(cwd, file, fieldIdx !== -1 ? args[fieldIdx + 1] : null, raw);
+        frontmatter.cmdFrontmatterGet(cwd, file, fieldIdx !== -1 ? args[fieldIdx + 1] : null, raw);
       } else if (subcommand === 'set') {
         const fieldIdx = args.indexOf('--field');
         const valueIdx = args.indexOf('--value');
-        cmdFrontmatterSet(cwd, file, fieldIdx !== -1 ? args[fieldIdx + 1] : null, valueIdx !== -1 ? args[valueIdx + 1] : undefined, raw);
+        frontmatter.cmdFrontmatterSet(cwd, file, fieldIdx !== -1 ? args[fieldIdx + 1] : null, valueIdx !== -1 ? args[valueIdx + 1] : undefined, raw);
       } else if (subcommand === 'merge') {
         const dataIdx = args.indexOf('--data');
-        cmdFrontmatterMerge(cwd, file, dataIdx !== -1 ? args[dataIdx + 1] : null, raw);
+        frontmatter.cmdFrontmatterMerge(cwd, file, dataIdx !== -1 ? args[dataIdx + 1] : null, raw);
       } else if (subcommand === 'validate') {
         const schemaIdx = args.indexOf('--schema');
-        cmdFrontmatterValidate(cwd, file, schemaIdx !== -1 ? args[schemaIdx + 1] : null, raw);
+        frontmatter.cmdFrontmatterValidate(cwd, file, schemaIdx !== -1 ? args[schemaIdx + 1] : null, raw);
       } else {
         error('Unknown frontmatter subcommand. Available: get, set, merge, validate');
       }
@@ -5329,17 +5374,17 @@ async function main() {
     case 'verify': {
       const subcommand = args[1];
       if (subcommand === 'plan-structure') {
-        cmdVerifyPlanStructure(cwd, args[2], raw);
+        verify.cmdVerifyPlanStructure(cwd, args[2], raw);
       } else if (subcommand === 'phase-completeness') {
-        cmdVerifyPhaseCompleteness(cwd, args[2], raw);
+        verify.cmdVerifyPhaseCompleteness(cwd, args[2], raw);
       } else if (subcommand === 'references') {
-        cmdVerifyReferences(cwd, args[2], raw);
+        verify.cmdVerifyReferences(cwd, args[2], raw);
       } else if (subcommand === 'commits') {
-        cmdVerifyCommits(cwd, args.slice(2), raw);
+        verify.cmdVerifyCommits(cwd, args.slice(2), raw);
       } else if (subcommand === 'artifacts') {
-        cmdVerifyArtifacts(cwd, args[2], raw);
+        verify.cmdVerifyArtifacts(cwd, args[2], raw);
       } else if (subcommand === 'key-links') {
-        cmdVerifyKeyLinks(cwd, args[2], raw);
+        verify.cmdVerifyKeyLinks(cwd, args[2], raw);
       } else {
         error('Unknown verify subcommand. Available: plan-structure, phase-completeness, references, commits, artifacts, key-links');
       }
@@ -5347,42 +5392,42 @@ async function main() {
     }
 
     case 'generate-slug': {
-      cmdGenerateSlug(args[1], raw);
+      commands.cmdGenerateSlug(args[1], raw);
       break;
     }
 
     case 'current-timestamp': {
-      cmdCurrentTimestamp(args[1] || 'full', raw);
+      commands.cmdCurrentTimestamp(args[1] || 'full', raw);
       break;
     }
 
     case 'list-todos': {
-      cmdListTodos(cwd, args[1], raw);
+      commands.cmdListTodos(cwd, args[1], raw);
       break;
     }
 
     case 'verify-path-exists': {
-      cmdVerifyPathExists(cwd, args[1], raw);
+      commands.cmdVerifyPathExists(cwd, args[1], raw);
       break;
     }
 
     case 'config-ensure-section': {
-      cmdConfigEnsureSection(cwd, raw);
+      config.cmdConfigEnsureSection(cwd, raw);
       break;
     }
 
     case 'config-set': {
-      cmdConfigSet(cwd, args[1], args[2], raw);
+      config.cmdConfigSet(cwd, args[1], args[2], raw);
       break;
     }
 
     case 'config-get': {
-      cmdConfigGet(cwd, args[1], raw);
+      config.cmdConfigGet(cwd, args[1], raw);
       break;
     }
 
     case 'history-digest': {
-      cmdHistoryDigest(cwd, raw);
+      commands.cmdHistoryDigest(cwd, raw);
       break;
     }
 
@@ -5396,7 +5441,7 @@ async function main() {
           phase: phaseIndex !== -1 ? args[phaseIndex + 1] : null,
           includeArchived: args.includes('--include-archived'),
         };
-        cmdPhasesList(cwd, options, raw);
+        phase.cmdPhasesList(cwd, options, raw);
       } else {
         error('Unknown phases subcommand. Available: list');
       }
@@ -5406,11 +5451,11 @@ async function main() {
     case 'roadmap': {
       const subcommand = args[1];
       if (subcommand === 'get-phase') {
-        cmdRoadmapGetPhase(cwd, args[2], raw);
+        roadmap.cmdRoadmapGetPhase(cwd, args[2], raw);
       } else if (subcommand === 'analyze') {
-        cmdRoadmapAnalyze(cwd, raw);
+        roadmap.cmdRoadmapAnalyze(cwd, raw);
       } else if (subcommand === 'update-plan-progress') {
-        cmdRoadmapUpdatePlanProgress(cwd, args[2], raw);
+        roadmap.cmdRoadmapUpdatePlanProgress(cwd, args[2], raw);
       } else {
         error('Unknown roadmap subcommand. Available: get-phase, analyze, update-plan-progress');
       }
@@ -5420,7 +5465,7 @@ async function main() {
     case 'requirements': {
       const subcommand = args[1];
       if (subcommand === 'mark-complete') {
-        cmdRequirementsMarkComplete(cwd, args.slice(2), raw);
+        milestone.cmdRequirementsMarkComplete(cwd, args.slice(2), raw);
       } else {
         error('Unknown requirements subcommand. Available: mark-complete');
       }
@@ -5430,16 +5475,16 @@ async function main() {
     case 'phase': {
       const subcommand = args[1];
       if (subcommand === 'next-decimal') {
-        cmdPhaseNextDecimal(cwd, args[2], raw);
+        phase.cmdPhaseNextDecimal(cwd, args[2], raw);
       } else if (subcommand === 'add') {
-        cmdPhaseAdd(cwd, args.slice(2).join(' '), raw);
+        phase.cmdPhaseAdd(cwd, args.slice(2).join(' '), raw);
       } else if (subcommand === 'insert') {
-        cmdPhaseInsert(cwd, args[2], args.slice(3).join(' '), raw);
+        phase.cmdPhaseInsert(cwd, args[2], args.slice(3).join(' '), raw);
       } else if (subcommand === 'remove') {
         const forceFlag = args.includes('--force');
-        cmdPhaseRemove(cwd, args[2], { force: forceFlag }, raw);
+        phase.cmdPhaseRemove(cwd, args[2], { force: forceFlag }, raw);
       } else if (subcommand === 'complete') {
-        cmdPhaseComplete(cwd, args[2], raw);
+        phase.cmdPhaseComplete(cwd, args[2], raw);
       } else {
         error('Unknown phase subcommand. Available: next-decimal, add, insert, remove, complete');
       }
@@ -5461,7 +5506,7 @@ async function main() {
           }
           milestoneName = nameArgs.join(' ') || null;
         }
-        cmdMilestoneComplete(cwd, args[2], { name: milestoneName, archivePhases }, raw);
+        milestone.cmdMilestoneComplete(cwd, args[2], { name: milestoneName, archivePhases }, raw);
       } else {
         error('Unknown milestone subcommand. Available: complete');
       }
@@ -5471,10 +5516,10 @@ async function main() {
     case 'validate': {
       const subcommand = args[1];
       if (subcommand === 'consistency') {
-        cmdValidateConsistency(cwd, raw);
+        verify.cmdValidateConsistency(cwd, raw);
       } else if (subcommand === 'health') {
         const repairFlag = args.includes('--repair');
-        cmdValidateHealth(cwd, { repair: repairFlag }, raw);
+        verify.cmdValidateHealth(cwd, { repair: repairFlag }, raw);
       } else {
         error('Unknown validate subcommand. Available: consistency, health');
       }
@@ -5483,14 +5528,14 @@ async function main() {
 
     case 'progress': {
       const subcommand = args[1] || 'json';
-      cmdProgressRender(cwd, subcommand, raw);
+      commands.cmdProgressRender(cwd, subcommand, raw);
       break;
     }
 
     case 'todo': {
       const subcommand = args[1];
       if (subcommand === 'complete') {
-        cmdTodoComplete(cwd, args[2], raw);
+        commands.cmdTodoComplete(cwd, args[2], raw);
       } else {
         error('Unknown todo subcommand. Available: complete');
       }
@@ -5505,7 +5550,7 @@ async function main() {
         phase: phaseIndex !== -1 ? args[phaseIndex + 1] : null,
         name: nameIndex !== -1 ? args.slice(nameIndex + 1).join(' ') : null,
       };
-      cmdScaffold(cwd, scaffoldType, scaffoldOptions, raw);
+      commands.cmdScaffold(cwd, scaffoldType, scaffoldOptions, raw);
       break;
     }
 
@@ -5513,40 +5558,40 @@ async function main() {
       const workflow = args[1];
       switch (workflow) {
         case 'execute-phase':
-          cmdInitExecutePhase(cwd, args[2], raw);
+          init.cmdInitExecutePhase(cwd, args[2], raw);
           break;
         case 'plan-phase':
-          cmdInitPlanPhase(cwd, args[2], raw);
+          init.cmdInitPlanPhase(cwd, args[2], raw);
           break;
         case 'new-project':
-          cmdInitNewProject(cwd, raw);
+          init.cmdInitNewProject(cwd, raw);
           break;
         case 'new-milestone':
-          cmdInitNewMilestone(cwd, raw);
+          init.cmdInitNewMilestone(cwd, raw);
           break;
         case 'quick':
-          cmdInitQuick(cwd, args.slice(2).join(' '), raw);
+          init.cmdInitQuick(cwd, args.slice(2).join(' '), raw);
           break;
         case 'resume':
-          cmdInitResume(cwd, raw);
+          init.cmdInitResume(cwd, raw);
           break;
         case 'verify-work':
-          cmdInitVerifyWork(cwd, args[2], raw);
+          init.cmdInitVerifyWork(cwd, args[2], raw);
           break;
         case 'phase-op':
-          cmdInitPhaseOp(cwd, args[2], raw);
+          init.cmdInitPhaseOp(cwd, args[2], raw);
           break;
         case 'todos':
-          cmdInitTodos(cwd, args[2], raw);
+          init.cmdInitTodos(cwd, args[2], raw);
           break;
         case 'milestone-op':
-          cmdInitMilestoneOp(cwd, raw);
+          init.cmdInitMilestoneOp(cwd, raw);
           break;
         case 'map-codebase':
-          cmdInitMapCodebase(cwd, raw);
+          init.cmdInitMapCodebase(cwd, raw);
           break;
         case 'progress':
-          cmdInitProgress(cwd, raw);
+          init.cmdInitProgress(cwd, raw);
           break;
         default:
           error(`Unknown init workflow: ${workflow}\nAvailable: execute-phase, plan-phase, new-project, new-milestone, quick, resume, verify-work, phase-op, todos, milestone-op, map-codebase, progress`);
@@ -5555,12 +5600,12 @@ async function main() {
     }
 
     case 'phase-plan-index': {
-      cmdPhasePlanIndex(cwd, args[1], raw);
+      phase.cmdPhasePlanIndex(cwd, args[1], raw);
       break;
     }
 
     case 'state-snapshot': {
-      cmdStateSnapshot(cwd, raw);
+      state.cmdStateSnapshot(cwd, raw);
       break;
     }
 
@@ -5568,7 +5613,7 @@ async function main() {
       const summaryPath = args[1];
       const fieldsIndex = args.indexOf('--fields');
       const fields = fieldsIndex !== -1 ? args[fieldsIndex + 1].split(',') : null;
-      cmdSummaryExtract(cwd, summaryPath, fields, raw);
+      commands.cmdSummaryExtract(cwd, summaryPath, fields, raw);
       break;
     }
 
@@ -5576,7 +5621,7 @@ async function main() {
       const query = args[1];
       const limitIdx = args.indexOf('--limit');
       const freshnessIdx = args.indexOf('--freshness');
-      await cmdWebsearch(query, {
+      await commands.cmdWebsearch(query, {
         limit: limitIdx !== -1 ? parseInt(args[limitIdx + 1], 10) : 10,
         freshness: freshnessIdx !== -1 ? args[freshnessIdx + 1] : null,
       }, raw);
