@@ -120,7 +120,12 @@ process.stdin.on('end', () => {
             } catch (e) {}
 
             if (cache.fork_head_sha && lastSeenSha && cache.fork_head_sha !== lastSeenSha) {
-              gsdUpdate = '\x1b[38;5;208m⬆ /gsd:update\x1b[0m │ ';
+              // Fork updated - changes are live via symlink, just need restart
+              gsdUpdate = '\x1b[38;5;208m⬆ GSD fork updated (restart to load)\x1b[0m │ ';
+              // Auto-acknowledge: update the SHA so notification dismisses after this session
+              try {
+                fs.writeFileSync(projectCacheFile, cache.fork_head_sha);
+              } catch (e) {}
             }
           }
         } else {
