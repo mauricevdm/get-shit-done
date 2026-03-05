@@ -82,42 +82,111 @@ Continue to `create_uat_file`.
 
 Use `phase_dir` from init (or run init if not already done).
 
+**1. Read phase section from ROADMAP.md:**
+
+```bash
+cat .planning/ROADMAP.md
+```
+
+Parse the ROADMAP to find the phase matching `phase_number` or `phase_name`.
+Extract the **Success Criteria** section for that phase (numbered list under `**Success Criteria:**` or `**Success Criteria** (what must be TRUE):`).
+
+**2. Find SUMMARY.md files:**
+
 ```bash
 ls "$phase_dir"/*-SUMMARY.md 2>/dev/null
 ```
 
-Read each SUMMARY.md to extract testable deliverables.
+Read each SUMMARY.md to extract implementation details.
+</step>
+
+<step name="extract_success_criteria">
+**Extract phase success criteria from ROADMAP.md (PRIMARY TESTS):**
+
+Parse the **Success Criteria** section found in find_summaries step.
+Each numbered criterion becomes a "Phase Goal" test.
+
+For each criterion, create a test with:
+- name: Brief test name from criterion
+- expected: Observable verification that proves the criterion is met
+- source: "ROADMAP Success Criteria #N"
+- category: "Phase Goal"
+
+**Generate intelligent verification methods based on phase type:**
+
+| Phase Type | Indicators | Verification Approach |
+|------------|------------|----------------------|
+| Infrastructure | "provision", "deploy", "create resource" | Azure CLI commands, Terraform state checks |
+| API/Backend | "endpoint", "API", "service" | curl/httpie commands, API response validation |
+| Frontend/UI | "dashboard", "UI", "display" | Browser verification, visual inspection |
+| Data Pipeline | "download", "ingest", "index" | Blob counts, database queries, metrics |
+| Worker/Job | "worker", "job", "process" | Log verification, state tracker checks |
+
+**Examples:**
+- Criterion: "FTP download worker can connect to ftp.ncbi.nlm.nih.gov"
+  → Name: "FTP Server Connection"
+  → Expected: "FTP client establishes connection to ftp.ncbi.nlm.nih.gov (verify via logs or test connection)"
+
+- Criterion: "~1,200 baseline XML files downloaded to Blob Storage"
+  → Name: "Baseline Files in Blob Storage"
+  → Expected: "Azure blob container shows ~1,200 XML files (run: `az storage blob list --container pubmed-raw --query 'length(@)'`)"
+
+- Criterion: "All files pass MD5 checksum validation"
+  → Name: "MD5 Validation Complete"
+  → Expected: "State tracker shows all downloads completed with status 'validated' (no checksum failures)"
+
+**If no Success Criteria found in ROADMAP:**
+- Log: "No Success Criteria found in ROADMAP for phase {phase}. Using SUMMARY.md only."
+- Continue to extract_tests with empty success criteria list
 </step>
 
 <step name="extract_tests">
-**Extract testable deliverables from SUMMARY.md:**
+**Extract implementation tests from SUMMARY.md (SECONDARY TESTS):**
 
-Parse for:
+Parse each SUMMARY.md for:
 1. **Accomplishments** - Features/functionality added
 2. **User-facing changes** - UI, workflows, interactions
 
-Focus on USER-OBSERVABLE outcomes, not implementation details.
+Focus on FUNCTIONAL verification, not existence checks.
 
-For each deliverable, create a test:
+For each deliverable, create a test with:
 - name: Brief test name
 - expected: What the user should see/experience (specific, observable)
+- source: The SUMMARY.md filename (e.g., "MASS-02-01-SUMMARY.md")
+- category: "Implementation"
 
-Examples:
+**Generate functional tests, not import checks:**
+
+BAD (existence check):
+- "MD5 module imports successfully"
+- "Retry handler function exists"
+
+GOOD (functional verification):
+- "MD5 validation detects corrupt file and reports failure"
+- "Retry handler recovers from temporary FTP disconnection"
+
+**Examples:**
+- Accomplishment: "FTP streaming client that downloads directly to blob without loading full file in memory"
+  → Name: "FTP Streaming to Blob"
+  → Expected: "Large file download completes without memory spike (verify via logs showing chunk uploads)"
+
 - Accomplishment: "Added comment threading with infinite nesting"
-  → Test: "Reply to a Comment"
+  → Name: "Reply to a Comment"
   → Expected: "Clicking Reply opens inline composer below comment. Submitting shows reply nested under parent with visual indentation."
 
 Skip internal/non-observable items (refactors, type changes, etc.).
 </step>
 
 <step name="create_uat_file">
-**Create UAT file with all tests:**
+**Create UAT file with categorized tests:**
 
 ```bash
 mkdir -p "$PHASE_DIR"
 ```
 
-Build test list from extracted deliverables.
+Build test list from:
+1. Success Criteria (from extract_success_criteria) - numbered first
+2. Implementation details (from extract_tests) - numbered after
 
 Create file:
 
@@ -126,9 +195,19 @@ Create file:
 status: testing
 phase: XX-name
 source: [list of SUMMARY.md files]
+roadmap_criteria: [number of success criteria from ROADMAP]
 started: [ISO timestamp]
 updated: [ISO timestamp]
 ---
+
+## Test Categories
+
+| Category | Tests | Purpose |
+|----------|-------|---------|
+| **Phase Goal** | 1-N | Verify phase achieved its GOAL per ROADMAP.md Success Criteria |
+| **Implementation** | N+1-M | Verify code artifacts work as designed per SUMMARY.md |
+
+*Primary focus: Phase Goal tests (1-N) must pass for phase to be considered complete.*
 
 ## Current Test
 <!-- OVERWRITE each test - shows where we are -->
@@ -141,19 +220,34 @@ awaiting: user response
 
 ## Tests
 
+<!-- Phase Goal (from ROADMAP.md Success Criteria) -->
+
 ### 1. [Test Name]
-expected: [observable behavior]
+expected: [observable verification from success criterion]
 result: [pending]
+source: ROADMAP Success Criteria #1
 
 ### 2. [Test Name]
-expected: [observable behavior]
+expected: [observable verification]
 result: [pending]
+source: ROADMAP Success Criteria #2
+
+...
+
+<!-- Implementation (from SUMMARY.md) -->
+
+### N. [Test Name]
+expected: [functional verification]
+result: [pending]
+source: XX-YY-SUMMARY.md
 
 ...
 
 ## Summary
 
 total: [N]
+phase_goal: [count of Phase Goal tests]
+implementation: [count of Implementation tests]
 passed: 0
 issues: 0
 pending: [N]
@@ -243,6 +337,8 @@ Append to Gaps section (structured YAML for plan-phase --gaps):
   reason: "User reported: {verbatim user response}"
   severity: {inferred}
   test: {N}
+  category: {Phase Goal | Implementation}
+  source: "{ROADMAP Success Criteria #N or SUMMARY.md filename}"
   artifacts: []  # Filled by diagnosis
   missing: []    # Filled by diagnosis
 ```
@@ -555,7 +651,13 @@ Default to **major** if unclear. User can correct if needed.
 </severity_inference>
 
 <success_criteria>
-- [ ] UAT file created with all tests from SUMMARY.md
+- [ ] Success Criteria extracted from ROADMAP.md for the phase (if present)
+- [ ] UAT file created with categorized tests (Phase Goal + Implementation)
+- [ ] Phase Goal tests numbered first, sourced from ROADMAP Success Criteria
+- [ ] Implementation tests numbered after, sourced from SUMMARY.md files
+- [ ] Infrastructure phases get verification commands (Azure CLI, Terraform)
+- [ ] Code phases get functional tests (not just import/existence checks)
+- [ ] Test source tracked (ROADMAP vs which SUMMARY.md)
 - [ ] Tests presented one at a time with expected behavior
 - [ ] User responses processed as pass/issue/skip
 - [ ] Severity inferred from description (never asked)
@@ -566,4 +668,5 @@ Default to **major** if unclear. User can correct if needed.
 - [ ] If issues: gsd-plan-checker verifies fix plans
 - [ ] If issues: revision loop until plans pass (max 3 iterations)
 - [ ] Ready for `/gsd:execute-phase --gaps-only` when complete
+- [ ] Backward compatible: works if phase has no Success Criteria in ROADMAP
 </success_criteria>
