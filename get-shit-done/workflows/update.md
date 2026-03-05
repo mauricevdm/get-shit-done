@@ -8,6 +8,42 @@ Read all files referenced by the invoking prompt's execution_context before star
 
 <process>
 
+<step name="check_fork_mode" priority="first">
+**Block update if using fork installation:**
+
+Check if GSD is installed via fork symlink:
+
+```bash
+CACHE_FILE="$HOME/.claude/cache/gsd-update-check.json"
+if [ -f "$CACHE_FILE" ]; then
+  grep -o '"mode":"[^"]*"' "$CACHE_FILE" 2>/dev/null | cut -d'"' -f4
+fi
+```
+
+**If output is "fork":**
+
+Display and exit:
+
+```
+## GSD Update Blocked
+
+You're using GSD via a **fork installation** (symlinked from your fork repo).
+
+Running `/gsd:update` would overwrite your fork with the npm package.
+
+**Instead:**
+- Changes to your fork are **already live** via the symlink
+- Just restart Claude Code to pick up new commands
+- To sync with upstream: `cd` to your fork and run `/gsd:sync-analyze`
+
+**Your fork location:** Check `~/.claude/cache/gsd-update-check.json` for `fork_path`
+```
+
+Exit without continuing.
+
+**If not fork mode:** Continue to next step.
+</step>
+
 <step name="get_installed_version">
 Detect whether GSD is installed locally or globally by checking both locations and validating install integrity:
 
