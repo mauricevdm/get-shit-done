@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 const readline = require('readline');
 const crypto = require('crypto');
+const { execSync } = require('child_process');
 
 // Colors
 const cyan = '\x1b[36m';
@@ -27,6 +28,31 @@ const hasCodex = args.includes('--codex');
 const hasBoth = args.includes('--both'); // Legacy flag, keeps working
 const hasAll = args.includes('--all');
 const hasUninstall = args.includes('--uninstall') || args.includes('-u');
+
+// Parse --git argument for git-based installation
+function parseGitArg() {
+  const gitIndex = args.findIndex(arg => arg === '--git');
+  if (gitIndex !== -1) {
+    const nextArg = args[gitIndex + 1];
+    if (!nextArg || nextArg.startsWith('-')) {
+      console.error(`  ${yellow}--git requires a repository URL${reset}`);
+      process.exit(1);
+    }
+    return nextArg;
+  }
+  const gitArg = args.find(arg => arg.startsWith('--git='));
+  if (gitArg) {
+    const value = gitArg.split('=')[1];
+    if (!value) {
+      console.error(`  ${yellow}--git requires a non-empty repository URL${reset}`);
+      process.exit(1);
+    }
+    return value;
+  }
+  return null;
+}
+const gitRepoUrl = parseGitArg();
+const hasGit = !!gitRepoUrl;
 
 // Runtime selection - can be set by flags or interactive prompt
 let selectedRuntimes = [];
@@ -186,7 +212,7 @@ console.log(banner);
 
 // Show help if requested
 if (hasHelp) {
-  console.log(`  ${yellow}Usage:${reset} npx get-shit-done-cc [options]\n\n  ${yellow}Options:${reset}\n    ${cyan}-g, --global${reset}              Install globally (to config directory)\n    ${cyan}-l, --local${reset}               Install locally (to current directory)\n    ${cyan}--claude${reset}                  Install for Claude Code only\n    ${cyan}--opencode${reset}                Install for OpenCode only\n    ${cyan}--gemini${reset}                  Install for Gemini only\n    ${cyan}--codex${reset}                   Install for Codex only\n    ${cyan}--all${reset}                     Install for all runtimes\n    ${cyan}-u, --uninstall${reset}           Uninstall GSD (remove all GSD files)\n    ${cyan}-c, --config-dir <path>${reset}   Specify custom config directory\n    ${cyan}-h, --help${reset}                Show this help message\n    ${cyan}--force-statusline${reset}        Replace existing statusline config\n\n  ${yellow}Examples:${reset}\n    ${dim}# Interactive install (prompts for runtime and location)${reset}\n    npx get-shit-done-cc\n\n    ${dim}# Install for Claude Code globally${reset}\n    npx get-shit-done-cc --claude --global\n\n    ${dim}# Install for Gemini globally${reset}\n    npx get-shit-done-cc --gemini --global\n\n    ${dim}# Install for Codex globally${reset}\n    npx get-shit-done-cc --codex --global\n\n    ${dim}# Install for all runtimes globally${reset}\n    npx get-shit-done-cc --all --global\n\n    ${dim}# Install to custom config directory${reset}\n    npx get-shit-done-cc --codex --global --config-dir ~/.codex-work\n\n    ${dim}# Install to current project only${reset}\n    npx get-shit-done-cc --claude --local\n\n    ${dim}# Uninstall GSD from Codex globally${reset}\n    npx get-shit-done-cc --codex --global --uninstall\n\n  ${yellow}Notes:${reset}\n    The --config-dir option is useful when you have multiple configurations.\n    It takes priority over CLAUDE_CONFIG_DIR / GEMINI_CONFIG_DIR / CODEX_HOME environment variables.\n`);
+  console.log(`  ${yellow}Usage:${reset} npx get-shit-done-cc [options]\n\n  ${yellow}Options:${reset}\n    ${cyan}-g, --global${reset}              Install globally (to config directory)\n    ${cyan}-l, --local${reset}               Install locally (to current directory)\n    ${cyan}--claude${reset}                  Install for Claude Code only\n    ${cyan}--opencode${reset}                Install for OpenCode only\n    ${cyan}--gemini${reset}                  Install for Gemini only\n    ${cyan}--codex${reset}                   Install for Codex only\n    ${cyan}--all${reset}                     Install for all runtimes\n    ${cyan}--git <url>${reset}               Install from git repo (clone instead of copy)\n    ${cyan}-u, --uninstall${reset}           Uninstall GSD (remove all GSD files)\n    ${cyan}-c, --config-dir <path>${reset}   Specify custom config directory\n    ${cyan}-h, --help${reset}                Show this help message\n    ${cyan}--force-statusline${reset}        Replace existing statusline config\n\n  ${yellow}Examples:${reset}\n    ${dim}# Interactive install (prompts for runtime and location)${reset}\n    npx get-shit-done-cc\n\n    ${dim}# Install for Claude Code globally${reset}\n    npx get-shit-done-cc --claude --global\n\n    ${dim}# Install from your fork (git-based, updates via git pull)${reset}\n    npx get-shit-done-cc --claude --global --git https://github.com/youruser/get-shit-done.git\n\n    ${dim}# Install for Gemini globally${reset}\n    npx get-shit-done-cc --gemini --global\n\n    ${dim}# Install for Codex globally${reset}\n    npx get-shit-done-cc --codex --global\n\n    ${dim}# Install for all runtimes globally${reset}\n    npx get-shit-done-cc --all --global\n\n    ${dim}# Install to custom config directory${reset}\n    npx get-shit-done-cc --codex --global --config-dir ~/.codex-work\n\n    ${dim}# Install to current project only${reset}\n    npx get-shit-done-cc --claude --local\n\n    ${dim}# Uninstall GSD from Codex globally${reset}\n    npx get-shit-done-cc --codex --global --uninstall\n\n  ${yellow}Notes:${reset}\n    The --git option clones the repo instead of copying from npm. Updates use git pull.\n    The --config-dir option is useful when you have multiple configurations.\n    It takes priority over CLAUDE_CONFIG_DIR / GEMINI_CONFIG_DIR / CODEX_HOME environment variables.\n`);
   process.exit(0);
 }
 
@@ -1556,6 +1582,224 @@ function reportLocalPatches(configDir, runtime = 'claude') {
   return meta.files || [];
 }
 
+/**
+ * Install GSD from a git repository (clone instead of copy)
+ * This allows updates via git pull and supports fork workflows
+ */
+function installFromGit(gitUrl, isGlobal, runtime = 'claude') {
+  const dirName = getDirName(runtime);
+  const targetDir = isGlobal
+    ? getGlobalDir(runtime, explicitConfigDir)
+    : path.join(process.cwd(), dirName);
+
+  const gsdDir = path.join(targetDir, 'get-shit-done');
+  const locationLabel = isGlobal
+    ? targetDir.replace(os.homedir(), '~')
+    : targetDir.replace(process.cwd(), '.');
+
+  let runtimeLabel = 'Claude Code';
+  if (runtime === 'opencode') runtimeLabel = 'OpenCode';
+  if (runtime === 'gemini') runtimeLabel = 'Gemini';
+  if (runtime === 'codex') runtimeLabel = 'Codex';
+
+  console.log(`  Installing from git for ${cyan}${runtimeLabel}${reset} to ${cyan}${locationLabel}${reset}`);
+  console.log(`  ${dim}Repository: ${gitUrl}${reset}\n`);
+
+  // Ensure target directory exists
+  fs.mkdirSync(targetDir, { recursive: true });
+
+  // Check if get-shit-done already exists
+  if (fs.existsSync(gsdDir)) {
+    // Check if it's already a git repo
+    const gitDir = path.join(gsdDir, '.git');
+    if (fs.existsSync(gitDir)) {
+      console.log(`  ${yellow}Existing git installation found. Updating...${reset}`);
+      try {
+        execSync('git pull', { cwd: gsdDir, stdio: 'pipe' });
+        console.log(`  ${green}✓${reset} Updated via git pull`);
+      } catch (err) {
+        console.error(`  ${yellow}Git pull failed: ${err.message}${reset}`);
+        console.error(`  ${dim}You may need to resolve conflicts manually in ${gsdDir}${reset}`);
+        process.exit(1);
+      }
+    } else {
+      // Not a git repo - back up and replace
+      const backupDir = gsdDir + '.backup-' + Date.now();
+      console.log(`  ${yellow}Backing up existing installation to ${path.basename(backupDir)}${reset}`);
+      fs.renameSync(gsdDir, backupDir);
+      cloneRepo(gitUrl, gsdDir);
+    }
+  } else {
+    cloneRepo(gitUrl, gsdDir);
+  }
+
+  // Write gsd-install.json config
+  const installConfig = {
+    method: 'git',
+    remote: gitUrl,
+    upstream: 'https://github.com/gsd-build/get-shit-done.git',
+    branch: 'main',
+    installed_at: new Date().toISOString(),
+    runtime: runtime,
+    is_global: isGlobal
+  };
+  const configPath = path.join(targetDir, 'gsd-install.json');
+  fs.writeFileSync(configPath, JSON.stringify(installConfig, null, 2));
+  console.log(`  ${green}✓${reset} Wrote gsd-install.json`);
+
+  // Create symlinks for commands, agents, hooks from the cloned repo
+  setupGitInstallSymlinks(targetDir, gsdDir, runtime, isGlobal);
+
+  // Write VERSION file from cloned repo's package.json
+  try {
+    const clonedPkg = require(path.join(gsdDir, 'package.json'));
+    const versionDest = path.join(gsdDir, 'get-shit-done', 'VERSION');
+    if (fs.existsSync(path.dirname(versionDest))) {
+      fs.writeFileSync(versionDest, clonedPkg.version);
+    }
+  } catch (e) {
+    // Ignore version write errors
+  }
+
+  console.log(`\n  ${green}✓ Git installation complete!${reset}`);
+  console.log(`\n  ${yellow}To update:${reset} Run ${cyan}/gsd:update${reset} (uses git pull)`);
+  console.log(`  ${yellow}To sync upstream:${reset} cd ${gsdDir} && git fetch upstream\n`);
+
+  return true;
+}
+
+/**
+ * Clone a git repository
+ */
+function cloneRepo(gitUrl, destDir) {
+  console.log(`  Cloning repository...`);
+  try {
+    execSync(`git clone "${gitUrl}" "${destDir}"`, { stdio: 'pipe' });
+    console.log(`  ${green}✓${reset} Cloned repository`);
+
+    // Add upstream remote if this looks like a fork
+    if (!gitUrl.includes('gsd-build/get-shit-done')) {
+      try {
+        execSync('git remote add upstream https://github.com/gsd-build/get-shit-done.git', {
+          cwd: destDir,
+          stdio: 'pipe'
+        });
+        console.log(`  ${green}✓${reset} Added upstream remote`);
+      } catch (e) {
+        // Upstream might already exist
+      }
+    }
+  } catch (err) {
+    console.error(`  ${yellow}Git clone failed: ${err.message}${reset}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * Set up symlinks/copies for a git-based installation
+ * The cloned repo structure is different from npm - need to wire up correctly
+ */
+function setupGitInstallSymlinks(targetDir, gsdDir, runtime, isGlobal) {
+  const isOpencode = runtime === 'opencode';
+  const isGemini = runtime === 'gemini';
+  const isCodex = runtime === 'codex';
+
+  // Path prefix for file references
+  const pathPrefix = isGlobal
+    ? `${targetDir.replace(/\\/g, '/')}/`
+    : `./${getDirName(runtime)}/`;
+
+  // Commands
+  if (isOpencode) {
+    const commandDir = path.join(targetDir, 'command');
+    const gsdCommandsSrc = path.join(gsdDir, 'commands', 'gsd');
+    fs.mkdirSync(commandDir, { recursive: true });
+    copyFlattenedCommands(gsdCommandsSrc, commandDir, 'gsd', pathPrefix, runtime);
+    console.log(`  ${green}✓${reset} Set up commands`);
+  } else if (isCodex) {
+    const skillsDir = path.join(targetDir, 'skills');
+    const gsdCommandsSrc = path.join(gsdDir, 'commands', 'gsd');
+    copyCommandsAsCodexSkills(gsdCommandsSrc, skillsDir, 'gsd', pathPrefix, runtime);
+    console.log(`  ${green}✓${reset} Set up skills`);
+  } else {
+    // Claude/Gemini - symlink commands/gsd to the cloned repo
+    const commandsDir = path.join(targetDir, 'commands');
+    const gsdCommandsDest = path.join(commandsDir, 'gsd');
+    fs.mkdirSync(commandsDir, { recursive: true });
+
+    // Remove existing and create symlink
+    if (fs.existsSync(gsdCommandsDest)) {
+      fs.rmSync(gsdCommandsDest, { recursive: true });
+    }
+    fs.symlinkSync(path.join(gsdDir, 'commands', 'gsd'), gsdCommandsDest);
+    console.log(`  ${green}✓${reset} Symlinked commands/gsd`);
+  }
+
+  // Symlink get-shit-done directory
+  const skillDest = path.join(targetDir, 'get-shit-done');
+  if (fs.existsSync(skillDest) && !fs.lstatSync(skillDest).isSymbolicLink()) {
+    // It's the cloned repo itself, don't overwrite
+  } else if (!fs.existsSync(skillDest)) {
+    fs.symlinkSync(path.join(gsdDir, 'get-shit-done'), skillDest);
+    console.log(`  ${green}✓${reset} Symlinked get-shit-done`);
+  }
+
+  // Agents - symlink individual agent files
+  const agentsSrc = path.join(gsdDir, 'agents');
+  if (fs.existsSync(agentsSrc)) {
+    const agentsDest = path.join(targetDir, 'agents');
+    fs.mkdirSync(agentsDest, { recursive: true });
+
+    // Remove old GSD agent symlinks
+    if (fs.existsSync(agentsDest)) {
+      for (const file of fs.readdirSync(agentsDest)) {
+        if (file.startsWith('gsd-') && file.endsWith('.md')) {
+          const filePath = path.join(agentsDest, file);
+          fs.unlinkSync(filePath);
+        }
+      }
+    }
+
+    // Create symlinks for each agent
+    for (const file of fs.readdirSync(agentsSrc)) {
+      if (file.endsWith('.md')) {
+        const srcPath = path.join(agentsSrc, file);
+        const destPath = path.join(agentsDest, file);
+        if (!fs.existsSync(destPath)) {
+          fs.symlinkSync(srcPath, destPath);
+        }
+      }
+    }
+    console.log(`  ${green}✓${reset} Symlinked agents`);
+  }
+
+  // Hooks - symlink from dist
+  if (!isCodex) {
+    const hooksSrc = path.join(gsdDir, 'hooks');
+    const hooksDest = path.join(targetDir, 'hooks');
+    fs.mkdirSync(hooksDest, { recursive: true });
+
+    // Symlink individual hook files
+    for (const file of fs.readdirSync(hooksSrc)) {
+      if (file.endsWith('.js')) {
+        const srcPath = path.join(hooksSrc, file);
+        const destPath = path.join(hooksDest, file);
+        if (fs.existsSync(destPath)) {
+          fs.unlinkSync(destPath);
+        }
+        fs.symlinkSync(srcPath, destPath);
+      }
+    }
+    console.log(`  ${green}✓${reset} Symlinked hooks`);
+  }
+
+  // Write package.json for CommonJS mode
+  if (!isCodex) {
+    const pkgJsonDest = path.join(targetDir, 'package.json');
+    fs.writeFileSync(pkgJsonDest, '{"type":"commonjs"}\n');
+  }
+}
+
 function install(isGlobal, runtime = 'claude') {
   const isOpencode = runtime === 'opencode';
   const isGemini = runtime === 'gemini';
@@ -2059,6 +2303,22 @@ if (hasGlobal && hasLocal) {
 } else if (explicitConfigDir && hasLocal) {
   console.error(`  ${yellow}Cannot use --config-dir with --local${reset}`);
   process.exit(1);
+} else if (hasGit) {
+  // Git-based installation
+  if (!hasGlobal && !hasLocal) {
+    console.error(`  ${yellow}--git requires --global or --local${reset}`);
+    process.exit(1);
+  }
+  if (hasUninstall) {
+    console.error(`  ${yellow}Cannot use --git with --uninstall${reset}`);
+    process.exit(1);
+  }
+  // Git install only supports single runtime at a time
+  const runtime = selectedRuntimes.length > 0 ? selectedRuntimes[0] : 'claude';
+  if (selectedRuntimes.length > 1) {
+    console.log(`  ${yellow}Git install supports one runtime at a time. Using: ${runtime}${reset}\n`);
+  }
+  installFromGit(gitRepoUrl, hasGlobal, runtime);
 } else if (hasUninstall) {
   if (!hasGlobal && !hasLocal) {
     console.error(`  ${yellow}--uninstall requires --global or --local${reset}`);

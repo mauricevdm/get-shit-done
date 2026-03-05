@@ -38,14 +38,82 @@ const child = spawn(process.execPath, ['-e', `
   const cwd = ${JSON.stringify(cwd)};
   const projectGsdDir = ${JSON.stringify(projectGsdDir)};
   const globalGsdDir = ${JSON.stringify(globalGsdDir)};
+  const homeDir = ${JSON.stringify(homeDir)};
 
-  // Check if GSD is installed from a git repo (fork mode)
+  // Find GSD config directory (project or global)
+  let configDir = null;
+  if (fs.existsSync(path.join(cwd, '.claude'))) {
+    configDir = path.join(cwd, '.claude');
+  } else if (fs.existsSync(path.join(homeDir, '.claude'))) {
+    configDir = path.join(homeDir, '.claude');
+  }
+
+  // Method 1: Check for gsd-install.json (explicit git installation)
+  const installConfigPath = configDir ? path.join(configDir, 'gsd-install.json') : null;
+  if (installConfigPath && fs.existsSync(installConfigPath)) {
+    try {
+      const installConfig = JSON.parse(fs.readFileSync(installConfigPath, 'utf8'));
+      if (installConfig.method === 'git' && installConfig.remote) {
+        // Git-based installation - check for updates via git
+        const gsdDir = path.join(configDir, 'get-shit-done');
+        let localHead = null;
+        let remoteHead = null;
+        let updateAvailable = false;
+
+        if (fs.existsSync(path.join(gsdDir, '.git'))) {
+          try {
+            // Get local HEAD
+            localHead = execSync('git rev-parse HEAD', {
+              cwd: gsdDir,
+              encoding: 'utf8',
+              timeout: 5000,
+              windowsHide: true
+            }).trim();
+
+            // Fetch from remote (silent)
+            execSync('git fetch origin --quiet', {
+              cwd: gsdDir,
+              timeout: 15000,
+              windowsHide: true,
+              stdio: 'pipe'
+            });
+
+            // Get remote HEAD
+            const branch = installConfig.branch || 'main';
+            remoteHead = execSync('git rev-parse origin/' + branch, {
+              cwd: gsdDir,
+              encoding: 'utf8',
+              timeout: 5000,
+              windowsHide: true
+            }).trim();
+
+            updateAvailable = localHead !== remoteHead;
+          } catch (e) {}
+        }
+
+        const result = {
+          mode: 'git',
+          method: 'git',
+          remote: installConfig.remote,
+          branch: installConfig.branch || 'main',
+          local_head: localHead,
+          remote_head: remoteHead,
+          update_available: updateAvailable,
+          gsd_path: gsdDir,
+          checked: Math.floor(Date.now() / 1000)
+        };
+        fs.writeFileSync(cacheFile, JSON.stringify(result));
+        process.exit(0);
+      }
+    } catch (e) {}
+  }
+
+  // Method 2: Check if we're currently IN a fork repo (has .planning/config.json with upstream)
   let isFork = false;
   let forkPath = null;
   let forkHeadSha = null;
   let forkUpstreamBehind = 0;
 
-  // Method 1: Check if we're currently IN a fork repo (has .planning/config.json with upstream)
   const cwdConfigPath = path.join(cwd, '.planning', 'config.json');
   if (fs.existsSync(cwdConfigPath)) {
     try {
@@ -59,7 +127,7 @@ const child = spawn(process.execPath, ['-e', `
     } catch (e) {}
   }
 
-  // Method 2: Check GSD installation directory for git repo (symlinked fork)
+  // Method 3: Check GSD installation directory for git repo (symlinked fork)
   if (!isFork) {
     let gsdDir = null;
     if (fs.existsSync(projectGsdDir)) {

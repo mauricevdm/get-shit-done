@@ -84,7 +84,8 @@ process.stdin.on('end', () => {
     }
 
     // GSD update available?
-    // Two modes:
+    // Three modes:
+    // - Git mode: GSD installed from git repo, updates via git pull
     // - Fork mode: green in fork repo (upstream sync), orange in other projects (fork updated)
     // - NPM mode: orange when newer version available
     let gsdUpdate = '';
@@ -93,7 +94,12 @@ process.stdin.on('end', () => {
       try {
         const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
 
-        if (cache.mode === 'fork') {
+        if (cache.mode === 'git') {
+          // Git mode - GSD installed from git repo
+          if (cache.update_available) {
+            gsdUpdate = '\x1b[38;5;208m⬆ /gsd:update\x1b[0m │ ';
+          }
+        } else if (cache.mode === 'fork') {
           // Fork mode - check if we're inside the fork repo
           const resolvedDir = fs.realpathSync(dir);
           const isInFork = cache.fork_path && resolvedDir.startsWith(cache.fork_path);

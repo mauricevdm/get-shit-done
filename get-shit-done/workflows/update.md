@@ -1,5 +1,8 @@
 <purpose>
-Check for GSD updates via npm, display changelog for versions between installed and latest, obtain user confirmation, and execute clean installation with cache clearing.
+Check for GSD updates and execute the appropriate update method based on installation type:
+- Git installation: `git pull` from the configured remote
+- Fork (symlink): Block update, direct user to fork repo
+- NPM installation: `npx get-shit-done-cc@latest`
 </purpose>
 
 <required_reading>
@@ -8,19 +11,120 @@ Read all files referenced by the invoking prompt's execution_context before star
 
 <process>
 
-<step name="check_fork_mode" priority="first">
-**Block update if using fork installation:**
+<step name="check_install_method" priority="first">
+**Determine installation method:**
 
-Check if GSD is installed via fork symlink:
+Check for gsd-install.json first, then cache file:
 
 ```bash
+# Check local install config first, then global
+LOCAL_CONFIG="./.claude/gsd-install.json"
+GLOBAL_CONFIG="$HOME/.claude/gsd-install.json"
 CACHE_FILE="$HOME/.claude/cache/gsd-update-check.json"
-if [ -f "$CACHE_FILE" ]; then
-  grep -o '"mode":"[^"]*"' "$CACHE_FILE" 2>/dev/null | cut -d'"' -f4
+
+if [ -f "$LOCAL_CONFIG" ]; then
+  cat "$LOCAL_CONFIG"
+  echo "---LOCAL_CONFIG---"
+elif [ -f "$GLOBAL_CONFIG" ]; then
+  cat "$GLOBAL_CONFIG"
+  echo "---GLOBAL_CONFIG---"
+elif [ -f "$CACHE_FILE" ]; then
+  cat "$CACHE_FILE"
+  echo "---CACHE_FILE---"
+else
+  echo "---NO_CONFIG---"
 fi
 ```
 
-**If output is "fork":**
+Parse output and route to appropriate update flow:
+
+**If gsd-install.json with `"method": "git"`:** → Go to `git_update`
+**If cache shows `"mode": "fork"`:** → Go to `block_fork_update`
+**Otherwise:** → Go to `get_installed_version` (npm flow)
+</step>
+
+<step name="git_update">
+**Update via git pull:**
+
+```bash
+# Get GSD directory from config
+LOCAL_GSD="./.claude/get-shit-done"
+GLOBAL_GSD="$HOME/.claude/get-shit-done"
+
+if [ -d "$LOCAL_GSD/.git" ]; then
+  GSD_DIR="$LOCAL_GSD"
+elif [ -d "$GLOBAL_GSD/.git" ]; then
+  GSD_DIR="$GLOBAL_GSD"
+else
+  echo "NO_GIT_DIR"
+fi
+
+if [ -n "$GSD_DIR" ]; then
+  cd "$GSD_DIR"
+  # Get current commit for comparison
+  OLD_HEAD=$(git rev-parse --short HEAD)
+  # Pull updates
+  git pull origin main 2>&1
+  NEW_HEAD=$(git rev-parse --short HEAD)
+  echo "OLD:$OLD_HEAD"
+  echo "NEW:$NEW_HEAD"
+fi
+```
+
+**If git pull succeeds and commits changed:**
+
+Display:
+
+```
+╔═══════════════════════════════════════════════════════════╗
+║  GSD Updated via Git                                       ║
+╚═══════════════════════════════════════════════════════════╝
+
+Updated from {OLD_HEAD} to {NEW_HEAD}
+
+**Recent changes:**
+```
+
+Then run `git log --oneline {OLD_HEAD}..{NEW_HEAD}` to show what changed.
+
+```
+⚠️  Restart Claude Code to pick up the new commands.
+```
+
+Clear the update cache:
+```bash
+rm -f ~/.claude/cache/gsd-update-check.json
+rm -f ./.claude/cache/gsd-update-check.json
+```
+
+Exit.
+
+**If git pull fails:**
+
+Display error and suggest manual resolution:
+
+```
+Git pull failed. You may need to resolve conflicts manually.
+
+cd {GSD_DIR}
+git status
+```
+
+Exit.
+
+**If already up to date:**
+
+```
+## GSD Update
+
+Already up to date (commit: {NEW_HEAD})
+```
+
+Exit.
+</step>
+
+<step name="block_fork_update">
+**Block update for symlinked fork installation:**
 
 Display and exit:
 
@@ -40,8 +144,6 @@ Running `/gsd:update` would overwrite your fork with the npm package.
 ```
 
 Exit without continuing.
-
-**If not fork mode:** Continue to next step.
 </step>
 
 <step name="get_installed_version">
